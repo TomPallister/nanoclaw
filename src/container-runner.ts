@@ -27,6 +27,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
+import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -175,6 +176,17 @@ function buildVolumeMounts(
     });
   }
 
+  // Google Calendar credentials (for Calendar MCP inside the container)
+  // Keys and tokens are co-located in ~/.config/google-calendar-mcp/
+  const gcalDir = path.join(homeDir, '.config', 'google-calendar-mcp');
+  if (fs.existsSync(path.join(gcalDir, 'gcal-oauth.keys.json')) && fs.existsSync(path.join(gcalDir, 'tokens.json'))) {
+    mounts.push({
+      hostPath: gcalDir,
+      containerPath: '/workspace/gcal',
+      readonly: false, // MCP may need to refresh OAuth tokens
+    });
+  }
+
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);
@@ -210,6 +222,24 @@ function buildVolumeMounts(
     containerPath: '/app/src',
     readonly: false,
   });
+
+  // Git and GitHub credentials (for repo operations inside containers)
+  const gitconfig = path.join(homeDir, '.gitconfig');
+  if (fs.existsSync(gitconfig)) {
+    mounts.push({
+      hostPath: gitconfig,
+      containerPath: '/home/node/.gitconfig',
+      readonly: true,
+    });
+  }
+  const ghConfigDir = path.join(homeDir, '.config', 'gh');
+  if (fs.existsSync(ghConfigDir)) {
+    mounts.push({
+      hostPath: ghConfigDir,
+      containerPath: '/home/node/.config/gh',
+      readonly: true,
+    });
+  }
 
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
@@ -248,6 +278,12 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  // Pass GitHub token if available (for gh CLI and git push)
+  const githubToken = process.env.GITHUB_TOKEN || readEnvFile(['GITHUB_TOKEN']).GITHUB_TOKEN;
+  if (githubToken) {
+    args.push('-e', `GITHUB_TOKEN=${githubToken}`);
   }
 
   // Runtime-specific args for host gateway resolution
