@@ -179,7 +179,10 @@ function buildVolumeMounts(
   // Google Calendar credentials (for Calendar MCP inside the container)
   // Keys and tokens are co-located in ~/.config/google-calendar-mcp/
   const gcalDir = path.join(homeDir, '.config', 'google-calendar-mcp');
-  if (fs.existsSync(path.join(gcalDir, 'gcal-oauth.keys.json')) && fs.existsSync(path.join(gcalDir, 'tokens.json'))) {
+  if (
+    fs.existsSync(path.join(gcalDir, 'gcal-oauth.keys.json')) &&
+    fs.existsSync(path.join(gcalDir, 'tokens.json'))
+  ) {
     mounts.push({
       hostPath: gcalDir,
       containerPath: '/workspace/gcal',
@@ -281,7 +284,8 @@ function buildContainerArgs(
   }
 
   // Pass GitHub token if available (for gh CLI and git push)
-  const githubToken = process.env.GITHUB_TOKEN || readEnvFile(['GITHUB_TOKEN']).GITHUB_TOKEN;
+  const githubToken =
+    process.env.GITHUB_TOKEN || readEnvFile(['GITHUB_TOKEN']).GITHUB_TOKEN;
   if (githubToken) {
     args.push('-e', `GITHUB_TOKEN=${githubToken}`);
   }
