@@ -64,12 +64,17 @@ Use Slack mrkdwn syntax. Run `/slack-formatting` for the full reference. Key rul
 
 ### WhatsApp/Telegram channels (folder starts with `whatsapp_` or `telegram_`)
 
-- `*bold*` (single asterisks, NEVER **double**)
-- `_italic_` (underscores)
-- `•` bullet points
-- ` ``` ` code blocks
+- *bold* uses single asterisks: `*bold*` (NEVER `**double**`)
+- _italic_ uses underscores: `_italic_`
+- • bullet points (not - dashes)
+- ``` code blocks ```
 
-No `##` headings. No `[links](url)`. No `**double stars**`.
+FORBIDDEN in WhatsApp/Telegram — these will render as ugly plaintext:
+- `**double asterisks**` — use `*single*` instead
+- `## headings` — use `*Bold text*` on its own line instead
+- `[links](url)` — just paste the URL
+- `| tables |` — use bullet points or numbered lists instead
+- Numbered markdown lists (`1.`) — use • bullets or write `1)` style
 
 ### Discord channels (folder starts with `discord_`)
 
