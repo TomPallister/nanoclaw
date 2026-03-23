@@ -99,7 +99,7 @@ export async function sendPoolPhoto(
   const api = poolApis[idx];
   try {
     const numericId = chatId.replace(/^tg:/, '');
-    await api.sendPhoto(numericId, url, caption ? { caption } : {});
+    await api.sendPhoto(numericId, url, caption ? { caption, parse_mode: 'Markdown' } : {});
     logger.info({ chatId, sender, poolIndex: idx }, 'Pool photo sent');
   } catch (err) {
     logger.error({ chatId, sender, err }, 'Failed to send pool photo');
@@ -400,7 +400,7 @@ export class TelegramChannel implements Channel {
     }
     try {
       const numericId = jid.replace(/^tg:/, '');
-      await this.bot.api.sendPhoto(numericId, url, caption ? { caption } : {});
+      await this.bot.api.sendPhoto(numericId, url, caption ? { caption, parse_mode: 'Markdown' } : {});
       logger.info({ jid }, 'Telegram photo sent');
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram photo');
