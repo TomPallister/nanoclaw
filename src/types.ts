@@ -87,6 +87,8 @@ export interface Channel {
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
   // Optional: typing indicator. Channels that support it implement it.
+  // Optional: send a photo by URL.
+  sendPhoto?(jid: string, url: string, caption?: string): Promise<void>;
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;

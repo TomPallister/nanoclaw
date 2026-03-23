@@ -63,6 +63,31 @@ server.tool(
 );
 
 server.tool(
+  'send_photo',
+  "Send a photo to the user or group immediately while you're still running. Use this to send images via URL. You can call this multiple times.",
+  {
+    url: z.string().describe('The URL of the photo to send'),
+    caption: z.string().optional().describe('Optional caption for the photo'),
+    sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
+  },
+  async (args) => {
+    const data: Record<string, string | undefined> = {
+      type: 'photo',
+      chatJid,
+      url: args.url,
+      caption: args.caption || undefined,
+      sender: args.sender || undefined,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: 'Photo sent.' }] };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 

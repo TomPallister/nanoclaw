@@ -71,6 +71,42 @@ export async function initBotPool(tokens: string[]): Promise<void> {
 }
 
 /**
+ * Send a photo via a pool bot assigned to the given sender name.
+ */
+export async function sendPoolPhoto(
+  chatId: string,
+  url: string,
+  caption: string | undefined,
+  sender: string,
+  groupFolder: string,
+): Promise<void> {
+  if (poolApis.length === 0) return;
+
+  const key = `${groupFolder}:${sender}`;
+  let idx = senderBotMap.get(key);
+  if (idx === undefined) {
+    idx = nextPoolIndex % poolApis.length;
+    nextPoolIndex++;
+    senderBotMap.set(key, idx);
+    try {
+      await poolApis[idx].setMyName(sender);
+      await new Promise((r) => setTimeout(r, 2000));
+    } catch (err) {
+      logger.warn({ sender, err }, 'Failed to rename pool bot for photo');
+    }
+  }
+
+  const api = poolApis[idx];
+  try {
+    const numericId = chatId.replace(/^tg:/, '');
+    await api.sendPhoto(numericId, url, caption ? { caption } : {});
+    logger.info({ chatId, sender, poolIndex: idx }, 'Pool photo sent');
+  } catch (err) {
+    logger.error({ chatId, sender, err }, 'Failed to send pool photo');
+  }
+}
+
+/**
  * Send a message via a pool bot assigned to the given sender name.
  * Assigns bots round-robin on first use; subsequent messages from the
  * same sender in the same group always use the same bot.
@@ -354,6 +390,20 @@ export class TelegramChannel implements Channel {
       logger.info({ jid, length: text.length }, 'Telegram message sent');
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
+    }
+  }
+
+  async sendPhoto(jid: string, url: string, caption?: string): Promise<void> {
+    if (!this.bot) {
+      logger.warn('Telegram bot not initialized');
+      return;
+    }
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      await this.bot.api.sendPhoto(numericId, url, caption ? { caption } : {});
+      logger.info({ jid }, 'Telegram photo sent');
+    } catch (err) {
+      logger.error({ jid, err }, 'Failed to send Telegram photo');
     }
   }
 
