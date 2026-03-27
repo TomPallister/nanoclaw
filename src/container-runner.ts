@@ -133,7 +133,8 @@ function buildVolumeMounts(
   const forwardedEnv = readEnvFile(FORWARDED_ENV_KEYS);
   // Also pick up from process.env (e.g. exported via ~/.zshenv.local)
   for (const key of FORWARDED_ENV_KEYS) {
-    if (!forwardedEnv[key] && process.env[key]) forwardedEnv[key] = process.env[key]!;
+    if (!forwardedEnv[key] && process.env[key])
+      forwardedEnv[key] = process.env[key]!;
   }
 
   // Read existing settings (if any) so we preserve user customisations
@@ -168,7 +169,10 @@ function buildVolumeMounts(
     },
   };
 
-  fs.writeFileSync(settingsFile, JSON.stringify(mergedSettings, null, 2) + '\n');
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify(mergedSettings, null, 2) + '\n',
+  );
 
   // Sync skills from container/skills/ into each group's .claude/skills/
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
