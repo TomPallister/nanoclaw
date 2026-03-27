@@ -348,6 +348,45 @@ export class WhatsAppChannel implements Channel {
     }
   }
 
+  async sendPhoto(jid: string, url: string, caption?: string): Promise<void> {
+    if (!this.connected) {
+      logger.warn({ jid, url }, 'WA disconnected, cannot send photo');
+      return;
+    }
+
+    try {
+      // Download image from URL
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch image: ${response.statusText}`);
+      }
+      const buffer = Buffer.from(await response.arrayBuffer());
+
+      // Send image with optional caption
+      const messageContent: any = {
+        image: buffer,
+      };
+      if (caption) {
+        messageContent.caption = ASSISTANT_HAS_OWN_NUMBER
+          ? caption
+          : `${ASSISTANT_NAME}: ${caption}`;
+      }
+
+      const sent = await this.sock.sendMessage(jid, messageContent);
+      if (sent?.key?.id && sent.message) {
+        this.sentMessageCache.set(sent.key.id, sent.message);
+        if (this.sentMessageCache.size > 256) {
+          const oldest = this.sentMessageCache.keys().next().value!;
+          this.sentMessageCache.delete(oldest);
+        }
+      }
+      logger.info({ jid, url, hasCaption: !!caption }, 'Photo sent');
+    } catch (err) {
+      logger.error({ jid, url, err }, 'Failed to send photo');
+      throw err;
+    }
+  }
+
   isConnected(): boolean {
     return this.connected;
   }
