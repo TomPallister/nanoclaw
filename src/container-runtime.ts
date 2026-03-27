@@ -26,12 +26,7 @@ export const PROXY_BIND_HOST =
 function detectProxyBindHost(): string {
   if (os.platform() === 'darwin') return '127.0.0.1';
 
-  // WSL: check if Docker Desktop is in use (host.docker.internal routes to loopback)
-  // vs Docker Engine (host.docker.internal routes to docker0 bridge).
-  // Fall through to docker0 detection for Docker Engine on WSL.
   if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) {
-    // Docker Desktop sets up VM routing — loopback works.
-    // Docker Engine does not — fall through to docker0 bridge detection.
     try {
       execSync('docker context inspect default 2>/dev/null | grep -q desktop', {
         stdio: 'pipe',
@@ -42,7 +37,6 @@ function detectProxyBindHost(): string {
     }
   }
 
-  // Bare-metal Linux: bind to the docker0 bridge IP instead of 0.0.0.0
   const ifaces = os.networkInterfaces();
   const docker0 = ifaces['docker0'];
   if (docker0) {
