@@ -410,6 +410,7 @@ async function runQuery(
         'mcp__nanoclaw__*',
         'mcp__gmail__*',
         'mcp__google_calendar__*',
+        'mcp__nuk_tpa_mcp__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -436,6 +437,10 @@ async function runQuery(
             GOOGLE_OAUTH_CREDENTIALS: '/workspace/gcal/gcal-oauth.keys.json',
             GOOGLE_CALENDAR_MCP_TOKEN_PATH: '/workspace/gcal/tokens.json',
           },
+        },
+        'nuk-tpa-mcp': {
+          command: 'node',
+          args: ['/workspace/project/nuk-tpa-mcp/dist/index.js'],
         },
       },
       hooks: {
