@@ -479,7 +479,7 @@ async function runQuery(
         },
         'nuk-tpa-mcp': {
           command: 'node',
-          args: ['/workspace/project/nuk-tpa-mcp/dist/index.js'],
+          args: ['/workspace/extra/nuk-tpa-mcp/dist/index.js'],
         },
       },
       hooks: {
