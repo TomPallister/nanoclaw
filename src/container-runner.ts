@@ -261,15 +261,6 @@ function buildVolumeMounts(
       readonly: true,
     });
   }
-  const ghConfigDir = path.join(homeDir, '.config', 'gh');
-  if (fs.existsSync(ghConfigDir)) {
-    mounts.push({
-      hostPath: ghConfigDir,
-      containerPath: '/home/node/.config/gh',
-      readonly: true,
-    });
-  }
-
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -298,6 +289,12 @@ function buildContainerArgs(
     `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
   );
 
+  // Credential proxy URL for GitHub credential helper and gh wrapper
+  args.push(
+    '-e',
+    `CREDENTIAL_PROXY_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+  );
+
   // Chrome DevTools Protocol URL for host browser automation
   args.push('-e', `HOST_BROWSER_CDP_URL=ws://${CONTAINER_HOST_GATEWAY}:9222`);
 
@@ -310,13 +307,6 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
-  }
-
-  // Pass GitHub token if available (for gh CLI and git push)
-  const githubToken =
-    process.env.GITHUB_TOKEN || readEnvFile(['GITHUB_TOKEN']).GITHUB_TOKEN;
-  if (githubToken) {
-    args.push('-e', `GITHUB_TOKEN=${githubToken}`);
   }
 
   // Runtime-specific args for host gateway resolution
