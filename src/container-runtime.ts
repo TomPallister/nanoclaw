@@ -2,7 +2,7 @@
  * Container runtime abstraction for NanoClaw.
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 
@@ -37,7 +37,9 @@ function detectProxyBindHost(): string {
     const ipv4 = docker0.find((a) => a.family === 'IPv4');
     if (ipv4) return ipv4.address;
   }
-  return '0.0.0.0';
+  throw new Error(
+    'Cannot detect docker0 bridge IP on Linux. Set CREDENTIAL_PROXY_HOST env var explicitly.',
+  );
 }
 
 /** CLI args needed for the container to resolve the host gateway. */
@@ -57,15 +59,15 @@ export function readonlyMountArgs(
   return ['-v', `${hostPath}:${containerPath}:ro`];
 }
 
-/** Returns the shell command to stop a container by name. */
-export function stopContainer(name: string): string {
-  return `${CONTAINER_RUNTIME_BIN} stop -t 1 ${name}`;
+/** Returns the bin and args to stop a container by name. */
+export function stopContainer(name: string): { bin: string; args: string[] } {
+  return { bin: CONTAINER_RUNTIME_BIN, args: ['stop', '-t', '1', name] };
 }
 
 /** Ensure the container runtime is running, starting it if needed. */
 export function ensureContainerRuntimeRunning(): void {
   try {
-    execSync(`${CONTAINER_RUNTIME_BIN} info`, {
+    execFileSync(CONTAINER_RUNTIME_BIN, ['info'], {
       stdio: 'pipe',
       timeout: 10000,
     });
@@ -105,14 +107,16 @@ export function ensureContainerRuntimeRunning(): void {
 /** Kill orphaned NanoClaw containers from previous runs. */
 export function cleanupOrphans(): void {
   try {
-    const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,
+    const output = execFileSync(
+      CONTAINER_RUNTIME_BIN,
+      ['ps', '--filter', 'name=nanoclaw-', '--format', '{{.Names}}'],
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     const orphans = output.trim().split('\n').filter(Boolean);
     for (const name of orphans) {
       try {
-        execSync(stopContainer(name), { stdio: 'pipe' });
+        const { bin, args } = stopContainer(name);
+        execFileSync(bin, args, { stdio: 'pipe' });
       } catch {
         /* already stopped */
       }
