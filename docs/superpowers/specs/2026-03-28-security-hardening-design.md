@@ -38,11 +38,11 @@ command: 'npx',
 args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
 ```
 
-This fetches the latest version from npm on every container startup. A supply chain attack on either package would execute immediately.
+This fetches the latest version from npm on every container startup. A supply chain attack on either package would execute immediately. The `chrome-devtools-mcp` package (used by the `host-browser` MCP server) has the same problem.
 
 **Changes:**
-- Add `npm install -g` for both MCP packages at pinned versions in `container/Dockerfile`
-- Update the MCP server config in `container/agent-runner/src/index.ts` to reference the installed global paths instead of `npx -y`
+- Add `npm install -g` for all three MCP packages at pinned versions in `container/Dockerfile`
+- Update the MCP server config in `container/agent-runner/src/index.ts` to use the globally installed binaries instead of `npx -y`. Check each package's `bin` entry in its `package.json` to determine the correct command (e.g., `server-gmail-autoauth-mcp` if it registers a bin, or `node /usr/local/lib/node_modules/<pkg>/dist/index.js` otherwise)
 
 **Files:** `container/Dockerfile`, `container/agent-runner/src/index.ts`
 
@@ -72,25 +72,62 @@ Replace `npm install` with `npm ci` in the container build. `npm ci` uses the lo
 
 #### 2a. Extend credential proxy for GitHub API
 
-Add a `/gh/` path prefix handler to the existing credential proxy. Requests to `http://proxy:PORT/gh/repos/...` are forwarded to `https://api.github.com/repos/...` with the `Authorization: Bearer <real-token>` header injected. The container never sees the real token.
+Add two new capabilities to the existing credential proxy:
 
-The proxy already does exactly this for Anthropic API traffic — this extends the same pattern.
+1. **`/gh/` path prefix** — requests to `http://proxy:PORT/gh/repos/...` are forwarded to `https://api.github.com/repos/...` with the `Authorization: Bearer <real-token>` header injected. The container never sees the real token.
+
+2. **`/github-credential` endpoint** — a simple GET endpoint that returns the GitHub token. Used by the git credential helper and gh wrapper (see 2c, 2d).
+
+The proxy already does request forwarding for Anthropic API traffic — this extends the same pattern.
 
 **File:** `src/credential-proxy.ts`
 
-#### 2b. Configure container to use proxied GitHub API
+#### 2b. Configure container to remove direct token access
 
-- Set `GITHUB_API_URL=http://host.docker.internal:PORT/gh` in container environment
 - Remove `GITHUB_TOKEN` environment variable from container args
 - Remove `~/.config/gh` mount (it contains the token in `hosts.yml`)
 
 **File:** `src/container-runner.ts`
 
-#### 2c. Git credential helper for proxied auth
+#### 2c. Git credential helper
 
-Add a credential helper script to the container image that fetches credentials from a `/github-credential` proxy endpoint on demand. Git calls the helper when it needs auth for github.com. The token passes transiently through memory but is never stored in the environment or on disk.
+Add a shell script to the container image that acts as a git credential helper. When git needs credentials for github.com, it calls the helper, which fetches the token from the proxy's `/github-credential` endpoint via curl. The token passes transiently through memory but is never stored in the environment or on disk.
 
-**Files:** `container/Dockerfile` (install helper script), `src/credential-proxy.ts` (add `/github-credential` endpoint)
+Configure git to use this helper via a system-level gitconfig in the Dockerfile (the host's `.gitconfig` is mounted read-only at `/home/node/.gitconfig`, so we use `/etc/gitconfig` which git reads first as system config):
+
+```bash
+# In Dockerfile
+RUN git config --system credential.helper '/usr/local/bin/github-credential-helper'
+```
+
+The helper script follows the standard git credential helper protocol:
+- Reads `host=` from stdin
+- If host matches `github.com`, fetches token from proxy and outputs `username=x-access-token\npassword=<token>`
+- Ignores `store` and `erase` operations
+
+**Files:** `container/Dockerfile` (install helper script, configure git), `src/credential-proxy.ts` (add `/github-credential` endpoint)
+
+#### 2d. gh CLI wrapper
+
+The `gh` CLI does not support custom API base URLs for github.com — it hardcodes `https://api.github.com`. A proxy-based redirect (like `GITHUB_API_URL`) will not work.
+
+Instead, add a wrapper script that replaces the `gh` binary in the container's PATH. The wrapper fetches the token from the proxy's `/github-credential` endpoint, sets `GH_TOKEN` in its own subprocess environment, and execs the real `gh` binary:
+
+```bash
+#!/bin/bash
+export GH_TOKEN=$(curl -sf http://host.docker.internal:PORT/github-token)
+exec /usr/bin/gh.real "$@"
+```
+
+The real `gh` binary is renamed to `gh.real` in the Dockerfile. The token is only in the subprocess environment for the duration of the `gh` command — it's not in the container's global environment and not readable via `/proc/1/environ`.
+
+**Files:** `container/Dockerfile` (install wrapper, rename real binary)
+
+#### 2e. Update add-github skill documentation
+
+The add-github skill at `.claude/skills/add-github/SKILL.md` documents the old `GITHUB_TOKEN` passthrough pattern and `~/.config/gh` mount. Update to reflect the new proxied approach.
+
+**File:** `.claude/skills/add-github/SKILL.md`
 
 ### 3. Command Injection Fix
 
@@ -112,7 +149,13 @@ export function stopContainer(name: string): { bin: string; args: string[] } {
 
 Update all call sites to use `execFile`/`execFileSync` (which bypass the shell) instead of `exec`/`execSync`.
 
-**Files:** `src/container-runtime.ts`, `src/container-runner.ts` (call sites)
+Call sites:
+- `src/container-runner.ts` — `killOnTimeout` calls `exec(stopContainer(...))`
+- `src/container-runtime.ts` — `cleanupOrphans` calls `execSync(stopContainer(...))`
+
+For consistency, also convert `ensureContainerRuntimeRunning` and the `docker ps` call in `cleanupOrphans` to use `execFileSync` (these use hardcoded constants, so the risk is theoretical, but it's the same file and the same pattern).
+
+**Files:** `src/container-runtime.ts`, `src/container-runner.ts`, `src/container-runtime.test.ts` (update tests for new return type)
 
 ### 4. Credential Proxy Bind Address Safety
 
@@ -144,14 +187,21 @@ The `CREDENTIAL_PROXY_HOST` environment variable override remains available for 
 - **Phone numbers in repo:** Repo is private and will remain private. Low risk.
 - **Sender allowlist:** Single-user DM setup means only the registered main chat triggers the agent. Other senders are already ignored.
 
+## Implementation Notes
+
+- Run `./container/build.sh` after all Dockerfile changes. Per project CLAUDE.md, a buildkit cache prune may be needed to ensure COPY steps pick up new files.
+- `scripts/claw` also references `GITHUB_TOKEN` — verify if it needs updating.
+
 ## Files Changed (Summary)
 
 | File | Changes |
 |------|---------|
 | `package.json` | Pin all dependency versions |
 | `container/agent-runner/package.json` | Pin all dependency versions |
-| `container/Dockerfile` | Pin global packages, pre-install MCP packages, use `npm ci` |
+| `container/Dockerfile` | Pin global packages, pre-install MCP packages, use `npm ci`, add gh wrapper + credential helper |
 | `container/agent-runner/src/index.ts` | Update MCP server config to use installed paths |
-| `src/credential-proxy.ts` | Add GitHub API proxy routes and credential endpoint |
-| `src/container-runner.ts` | Remove `GITHUB_TOKEN` env var, remove gh config mount, set `GITHUB_API_URL` |
-| `src/container-runtime.ts` | Refactor `stopContainer` to args array, fix `0.0.0.0` fallback |
+| `src/credential-proxy.ts` | Add GitHub API proxy routes and `/github-credential` endpoint |
+| `src/container-runner.ts` | Remove `GITHUB_TOKEN` env var, remove `~/.config/gh` mount |
+| `src/container-runtime.ts` | Refactor `stopContainer` to args array, convert `exec` to `execFile`, fix `0.0.0.0` fallback |
+| `src/container-runtime.test.ts` | Update tests for new `stopContainer` return type |
+| `.claude/skills/add-github/SKILL.md` | Update to reflect proxied GitHub token approach |
