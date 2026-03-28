@@ -31,14 +31,9 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Chromium path for agent-browser
-ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
-
 # Pin all global packages to exact versions for supply chain safety.
 # MCP packages are pre-installed here instead of fetched via npx at runtime.
 RUN npm install -g \
-    agent-browser@0.23.0 \
     @anthropic-ai/claude-code@2.1.86 \
     @gongrzhe/server-gmail-autoauth-mcp@1.1.11 \
     @cocal/google-calendar-mcp@2.6.1 \

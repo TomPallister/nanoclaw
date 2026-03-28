@@ -27,9 +27,11 @@ echo "Using your default Chrome profile (logged-in sessions available)"
 
 # Launch Chrome with remote debugging using default profile
 # Note: NOT using --user-data-dir so it uses the default profile
+# Bind to all interfaces (0.0.0.0) so containers can access it
 $CHROME_BIN \
     --remote-debugging-port=9222 \
     --remote-debugging-address=0.0.0.0 \
+    --restore-last-session \
     > /dev/null 2>&1 &
 
 CHROME_PID=$!

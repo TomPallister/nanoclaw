@@ -64,17 +64,120 @@ server.tool(
 
 server.tool(
   'send_photo',
-  "Send a photo to the user or group immediately while you're still running. Use this to send images via URL. You can call this multiple times.",
+  "Send a photo to the user or group immediately while you're still running. Use this to send images via URL, local file path, or base64 data. For local files or base64 data, they will be copied to a persistent location. You can call this multiple times.",
   {
-    url: z.string().describe('The URL of the photo to send'),
+    url: z.string().describe('The URL, file path, or base64 data URI of the photo to send (supports http://, https://, file://, data:image/..., or absolute paths)'),
     caption: z.string().optional().describe('Optional caption for the photo'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
   },
   async (args) => {
+    let finalUrl = args.url;
+
+    // Handle base64 data URIs - save to persistent location
+    if (args.url.startsWith('data:image/')) {
+      const match = args.url.match(/^data:image\/(\w+);base64,(.+)$/);
+      if (match) {
+        const [, ext, base64Data] = match;
+        const timestamp = Date.now();
+        const destFilename = `screenshot-${timestamp}.${ext}`;
+        const destPath = path.join('/workspace/group', destFilename);
+
+        // Decode and write base64 to file
+        const buffer = Buffer.from(base64Data, 'base64');
+        fs.writeFileSync(destPath, buffer);
+        finalUrl = `file:///workspace/group/${destFilename}`;
+      }
+    }
+    // Handle local file paths - copy to mounted group directory for persistence
+    else if (args.url.startsWith('file://') || args.url.startsWith('/')) {
+      const sourcePath = args.url.startsWith('file://') ? args.url.slice(7) : args.url;
+
+      // Check if file exists
+      if (fs.existsSync(sourcePath)) {
+        // Generate a unique filename in the group directory
+        const ext = path.extname(sourcePath) || '.png';
+        const basename = path.basename(sourcePath, ext);
+        const timestamp = Date.now();
+        const destFilename = `${basename}-${timestamp}${ext}`;
+        const destPath = path.join('/workspace/group', destFilename);
+
+        // Copy file to persistent location
+        fs.copyFileSync(sourcePath, destPath);
+        finalUrl = `file:///workspace/group/${destFilename}`;
+      } else {
+        // File doesn't exist - try searching in common locations
+        const possiblePaths = [
+          sourcePath,
+          path.join('/workspace/group', sourcePath),
+          path.join('/tmp', sourcePath),
+          path.join(process.cwd(), sourcePath),
+        ];
+
+        let found = false;
+        for (const tryPath of possiblePaths) {
+          if (fs.existsSync(tryPath)) {
+            const ext = path.extname(tryPath) || '.png';
+            const basename = path.basename(tryPath, ext);
+            const timestamp = Date.now();
+            const destFilename = `${basename}-${timestamp}${ext}`;
+            const destPath = path.join('/workspace/group', destFilename);
+            fs.copyFileSync(tryPath, destPath);
+            finalUrl = `file:///workspace/group/${destFilename}`;
+            found = true;
+            break;
+          }
+        }
+
+        if (!found) {
+          // Still not found - pass through anyway, might be accessible from host
+          finalUrl = args.url.startsWith('file://') ? args.url : `file://${args.url}`;
+        }
+      }
+    }
+    // Handle relative paths (anything that doesn't start with http://, https://, file://, data:, or /)
+    else if (!args.url.startsWith('http://') && !args.url.startsWith('https://')) {
+      // Treat as relative path and search for it
+      const possiblePaths = [
+        path.join(process.cwd(), args.url),
+        path.join('/workspace/group', args.url),
+        path.join('/tmp', args.url),
+        path.join('/app', args.url),
+        path.join('/home/node', args.url),
+        args.url, // Try as-is in case it's already a valid relative path from CWD
+      ];
+
+      console.error(`[send_photo] Searching for relative path: ${args.url}`);
+      console.error(`[send_photo] CWD: ${process.cwd()}`);
+      console.error(`[send_photo] Possible paths: ${JSON.stringify(possiblePaths)}`);
+
+      let found = false;
+      for (const tryPath of possiblePaths) {
+        console.error(`[send_photo] Checking: ${tryPath}`);
+        if (fs.existsSync(tryPath)) {
+          console.error(`[send_photo] Found at: ${tryPath}`);
+          const ext = path.extname(tryPath) || '.png';
+          const basename = path.basename(tryPath, ext);
+          const timestamp = Date.now();
+          const destFilename = `${basename}-${timestamp}${ext}`;
+          const destPath = path.join('/workspace/group', destFilename);
+          fs.copyFileSync(tryPath, destPath);
+          finalUrl = `file:///workspace/group/${destFilename}`;
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) {
+        console.error(`[send_photo] File not found in any location!`);
+        // Assume it's a filename in current directory and construct full path
+        finalUrl = `file://${path.join(process.cwd(), args.url)}`;
+      }
+    }
+
     const data: Record<string, string | undefined> = {
       type: 'photo',
       chatJid,
-      url: args.url,
+      url: finalUrl,
       caption: args.caption || undefined,
       sender: args.sender || undefined,
       groupFolder,

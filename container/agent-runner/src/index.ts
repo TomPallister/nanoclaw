@@ -456,40 +456,44 @@ async function runQuery(
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+      mcpServers: (() => {
+        const browserUrl = (process.env.HOST_BROWSER_CDP_URL || 'ws://host.docker.internal:9222').replace('ws://', 'http://');
+        log(`MCP host-browser browserUrl: ${browserUrl}`);
+        return {
+          nanoclaw: {
+            command: 'node',
+            args: [mcpServerPath],
+            env: {
+              NANOCLAW_CHAT_JID: containerInput.chatJid,
+              NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+              NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+            },
           },
-        },
-        gmail: {
-          command: 'gmail-mcp',
-          args: [],
-        },
-        'google-calendar': {
-          command: 'google-calendar-mcp',
-          args: [],
-          env: {
-            GOOGLE_OAUTH_CREDENTIALS: '/workspace/gcal/gcal-oauth.keys.json',
-            GOOGLE_CALENDAR_MCP_TOKEN_PATH: '/workspace/gcal/tokens.json',
+          gmail: {
+            command: 'gmail-mcp',
+            args: [],
           },
-        },
-        'nuk-tpa-mcp': {
-          command: 'node',
-          args: ['/workspace/extra/nuk-tpa-mcp/dist/index.js'],
-        },
-        'host-browser': {
-          command: 'chrome-devtools-mcp',
-          args: [],
-          env: {
-            CHROME_REMOTE_DEBUGGING_URL: process.env.HOST_BROWSER_CDP_URL || 'ws://host.docker.internal:9222',
+          'google-calendar': {
+            command: 'google-calendar-mcp',
+            args: [],
+            env: {
+              GOOGLE_OAUTH_CREDENTIALS: '/workspace/gcal/gcal-oauth.keys.json',
+              GOOGLE_CALENDAR_MCP_TOKEN_PATH: '/workspace/gcal/tokens.json',
+            },
           },
-        },
-      },
+          'nuk-tpa-mcp': {
+            command: 'node',
+            args: ['/workspace/extra/nuk-tpa-mcp/dist/index.js'],
+          },
+          'host-browser': {
+            command: 'chrome-devtools-mcp',
+            args: [
+              '--browserUrl',
+              browserUrl,
+            ],
+          },
+        };
+      })(),
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
       },

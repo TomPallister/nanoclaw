@@ -640,7 +640,30 @@ async function main(): Promise<void> {
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       if (!channel.sendPhoto)
         throw new Error(`Channel for JID ${jid} does not support sendPhoto`);
-      return channel.sendPhoto(jid, url, caption);
+
+      // Translate container paths to host paths
+      let translatedUrl = url;
+      if (url.startsWith('file:///workspace/group/')) {
+        const group = registeredGroups[jid];
+        if (group) {
+          try {
+            const hostPath = resolveGroupFolderPath(group.folder);
+            const relativePath = url.slice('file:///workspace/group/'.length);
+            translatedUrl = `file://${path.join(hostPath, relativePath)}`;
+            logger.debug(
+              { original: url, translated: translatedUrl },
+              'Translated container path to host path',
+            );
+          } catch (err) {
+            logger.warn(
+              { jid, url, err },
+              'Failed to translate container path',
+            );
+          }
+        }
+      }
+
+      return channel.sendPhoto(jid, translatedUrl, caption);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,

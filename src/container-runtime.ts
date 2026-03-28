@@ -45,8 +45,9 @@ function detectProxyBindHost(): string {
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
   // On Linux, host.docker.internal isn't built-in — add it explicitly
+  // Use the explicit proxy bind IP instead of host-gateway for reliable connectivity
   if (os.platform() === 'linux') {
-    return ['--add-host=host.docker.internal:host-gateway'];
+    return [`--add-host=host.docker.internal:${PROXY_BIND_HOST}`];
   }
   return [];
 }
