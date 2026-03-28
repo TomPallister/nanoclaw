@@ -50,8 +50,7 @@ export function startCredentialProxy(
       // GitHub credential endpoint — returns token as plaintext for
       // container-side git credential helper and gh CLI wrapper.
       if (req.url === '/github-credential' && req.method === 'GET') {
-        const ghToken =
-          process.env.GITHUB_TOKEN || secrets.GITHUB_TOKEN || '';
+        const ghToken = process.env.GITHUB_TOKEN || secrets.GITHUB_TOKEN || '';
         if (!ghToken) {
           res.writeHead(404);
           res.end('No GitHub token configured');
