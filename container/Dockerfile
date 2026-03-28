@@ -35,8 +35,14 @@ RUN apt-get update && apt-get install -y \
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install agent-browser and claude-code globally
-RUN npm install -g agent-browser @anthropic-ai/claude-code
+# Pin all global packages to exact versions for supply chain safety.
+# MCP packages are pre-installed here instead of fetched via npx at runtime.
+RUN npm install -g \
+    agent-browser@0.23.0 \
+    @anthropic-ai/claude-code@2.1.86 \
+    @gongrzhe/server-gmail-autoauth-mcp@1.1.11 \
+    @cocal/google-calendar-mcp@2.6.1 \
+    chrome-devtools-mcp@0.20.3
 
 # Create app directory
 WORKDIR /app
@@ -45,7 +51,7 @@ WORKDIR /app
 COPY agent-runner/package*.json ./
 
 # Install dependencies
-RUN npm install
+RUN npm ci
 
 # Copy source code
 COPY agent-runner/ ./
@@ -64,6 +70,18 @@ RUN printf '#!/bin/bash\nset -e\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace && chmod 777 /home/node
+
+# Git credential helper — fetches GitHub token from credential proxy on demand.
+# Token passes transiently through memory, never stored in environment or on disk.
+RUN printf '#!/bin/bash\nif [ "$1" != "get" ]; then exit 0; fi\nhost=""\nwhile IFS= read -r line; do\n  case "$line" in host=*) host="${line#host=}" ;; esac\n  [ -z "$line" ] && break\ndone\nif [ "$host" = "github.com" ]; then\n  TOKEN=$(curl -sf "$CREDENTIAL_PROXY_URL/github-credential")\n  if [ -n "$TOKEN" ]; then\n    echo "username=x-access-token"\n    echo "password=$TOKEN"\n  fi\nfi\n' > /usr/local/bin/github-credential-helper \
+    && chmod +x /usr/local/bin/github-credential-helper \
+    && git config --system credential.helper /usr/local/bin/github-credential-helper
+
+# gh CLI wrapper — fetches GitHub token from credential proxy per invocation.
+# The real gh binary is renamed; this wrapper injects auth transiently.
+RUN mv /usr/bin/gh /usr/bin/gh.real \
+    && printf '#!/bin/bash\nexport GH_TOKEN=$(curl -sf "$CREDENTIAL_PROXY_URL/github-credential")\nexec /usr/bin/gh.real "$@"\n' > /usr/bin/gh \
+    && chmod +x /usr/bin/gh
 
 # Switch to non-root user (required for --dangerously-skip-permissions)
 USER node
