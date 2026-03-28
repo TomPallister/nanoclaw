@@ -230,13 +230,14 @@ The container runs as the host user (UID passthrough). If files are owned by a d
 
 ## Removal
 
-1. Remove `gh` installation block from `container/Dockerfile`
-2. Remove git/gh credential mounts from `src/container-runner.ts`
-3. Remove `GITHUB_TOKEN` passthrough from `src/container-runner.ts`
-4. Remove `GITHUB_TOKEN` from `.env`
-5. Remove the repo directory mount from the group's `container_config` in SQLite
-6. Remove GitHub instructions from group CLAUDE.md files
-7. Rebuild:
+1. Remove `gh` installation block and wrapper scripts from `container/Dockerfile`
+2. Remove git credential helper from `container/Dockerfile`
+3. Remove `CREDENTIAL_PROXY_URL` env var from `src/container-runner.ts`
+4. Remove `/github-credential` endpoint from `src/credential-proxy.ts`
+5. Remove `GITHUB_TOKEN` from `.env`
+6. Remove the repo directory mount from the group's `container_config` in SQLite
+7. Remove GitHub instructions from group CLAUDE.md files
+8. Rebuild:
 ```bash
 ./container/build.sh
 npm run build

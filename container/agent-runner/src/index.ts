@@ -467,12 +467,12 @@ async function runQuery(
           },
         },
         gmail: {
-          command: 'npx',
-          args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
+          command: 'gmail-mcp',
+          args: [],
         },
         'google-calendar': {
-          command: 'npx',
-          args: ['-y', '@cocal/google-calendar-mcp'],
+          command: 'google-calendar-mcp',
+          args: [],
           env: {
             GOOGLE_OAUTH_CREDENTIALS: '/workspace/gcal/gcal-oauth.keys.json',
             GOOGLE_CALENDAR_MCP_TOKEN_PATH: '/workspace/gcal/tokens.json',
@@ -483,8 +483,8 @@ async function runQuery(
           args: ['/workspace/extra/nuk-tpa-mcp/dist/index.js'],
         },
         'host-browser': {
-          command: 'npx',
-          args: ['-y', 'chrome-devtools-mcp'],
+          command: 'chrome-devtools-mcp',
+          args: [],
           env: {
             CHROME_REMOTE_DEBUGGING_URL: process.env.HOST_BROWSER_CDP_URL || 'ws://host.docker.internal:9222',
           },
