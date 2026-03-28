@@ -299,10 +299,7 @@ function buildContainerArgs(
   );
 
   // Chrome DevTools Protocol URL for host browser automation
-  args.push(
-    '-e',
-    `HOST_BROWSER_CDP_URL=ws://${CONTAINER_HOST_GATEWAY}:9222`
-  );
+  args.push('-e', `HOST_BROWSER_CDP_URL=ws://${CONTAINER_HOST_GATEWAY}:9222`);
 
   // Mirror the host's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
