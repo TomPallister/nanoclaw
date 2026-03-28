@@ -72,13 +72,7 @@ Replace `npm install` with `npm ci` in the container build. `npm ci` uses the lo
 
 #### 2a. Extend credential proxy for GitHub API
 
-Add two new capabilities to the existing credential proxy:
-
-1. **`/gh/` path prefix** — requests to `http://proxy:PORT/gh/repos/...` are forwarded to `https://api.github.com/repos/...` with the `Authorization: Bearer <real-token>` header injected. The container never sees the real token.
-
-2. **`/github-credential` endpoint** — a simple GET endpoint that returns the GitHub token. Used by the git credential helper and gh wrapper (see 2c, 2d).
-
-The proxy already does request forwarding for Anthropic API traffic — this extends the same pattern.
+Add a `/github-credential` GET endpoint to the existing credential proxy. This endpoint returns the GitHub token as a plaintext response. Used by the git credential helper (2c) and gh CLI wrapper (2d) to fetch the token on demand without storing it in the container environment.
 
 **File:** `src/credential-proxy.ts`
 
@@ -105,7 +99,7 @@ The helper script follows the standard git credential helper protocol:
 - If host matches `github.com`, fetches token from proxy and outputs `username=x-access-token\npassword=<token>`
 - Ignores `store` and `erase` operations
 
-**Files:** `container/Dockerfile` (install helper script, configure git), `src/credential-proxy.ts` (add `/github-credential` endpoint)
+**Files:** `container/Dockerfile` (install helper script, configure git)
 
 #### 2d. gh CLI wrapper
 
@@ -115,7 +109,7 @@ Instead, add a wrapper script that replaces the `gh` binary in the container's P
 
 ```bash
 #!/bin/bash
-export GH_TOKEN=$(curl -sf http://host.docker.internal:PORT/github-token)
+export GH_TOKEN=$(curl -sf http://host.docker.internal:PORT/github-credential)
 exec /usr/bin/gh.real "$@"
 ```
 
@@ -200,7 +194,7 @@ The `CREDENTIAL_PROXY_HOST` environment variable override remains available for 
 | `container/agent-runner/package.json` | Pin all dependency versions |
 | `container/Dockerfile` | Pin global packages, pre-install MCP packages, use `npm ci`, add gh wrapper + credential helper |
 | `container/agent-runner/src/index.ts` | Update MCP server config to use installed paths |
-| `src/credential-proxy.ts` | Add GitHub API proxy routes and `/github-credential` endpoint |
+| `src/credential-proxy.ts` | Add `/github-credential` endpoint |
 | `src/container-runner.ts` | Remove `GITHUB_TOKEN` env var, remove `~/.config/gh` mount |
 | `src/container-runtime.ts` | Refactor `stopContainer` to args array, convert `exec` to `execFile`, fix `0.0.0.0` fallback |
 | `src/container-runtime.test.ts` | Update tests for new `stopContainer` return type |
