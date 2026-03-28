@@ -74,6 +74,10 @@ systemctl --user restart nanoclaw
 
 **WhatsApp not connecting after upgrade:** WhatsApp is now a separate skill, not bundled in core. Run `/add-whatsapp` (or `npx tsx scripts/apply-skill.ts .claude/skills/add-whatsapp && npm run build`) to install it. Existing auth credentials and groups are preserved.
 
+## Dependency Pinning
+
+All dependencies MUST use exact versions — no `^` or `~` prefixes. This applies to both `package.json` and `container/agent-runner/package.json`. When adding a new dependency, use `npm install --save-exact <package>`. Global packages in `container/Dockerfile` must also specify exact versions.
+
 ## Container Build Cache
 
 The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
