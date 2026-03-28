@@ -450,6 +450,7 @@ async function runQuery(
         'mcp__gmail__*',
         'mcp__google_calendar__*',
         'mcp__nuk_tpa_mcp__*',
+        'mcp__host_browser__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -480,6 +481,13 @@ async function runQuery(
         'nuk-tpa-mcp': {
           command: 'node',
           args: ['/workspace/extra/nuk-tpa-mcp/dist/index.js'],
+        },
+        'host-browser': {
+          command: 'npx',
+          args: ['-y', 'chrome-devtools-mcp'],
+          env: {
+            CHROME_REMOTE_DEBUGGING_URL: process.env.HOST_BROWSER_CDP_URL || 'ws://host.docker.internal:9222',
+          },
         },
       },
       hooks: {

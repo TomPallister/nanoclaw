@@ -355,12 +355,23 @@ export class WhatsAppChannel implements Channel {
     }
 
     try {
-      // Download image from URL
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch image: ${response.statusText}`);
+      let buffer: Buffer;
+
+      // Check if it's a local file path
+      if (url.startsWith('file://') || url.startsWith('/')) {
+        // Local file - read directly from filesystem
+        const filePath = url.startsWith('file://') ? url.slice(7) : url;
+        buffer = fs.readFileSync(filePath);
+        logger.debug({ filePath }, 'Read local image file');
+      } else {
+        // Remote URL - download via fetch
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch image: ${response.statusText}`);
+        }
+        buffer = Buffer.from(await response.arrayBuffer());
+        logger.debug({ url }, 'Downloaded remote image');
       }
-      const buffer = Buffer.from(await response.arrayBuffer());
 
       // Send image with optional caption
       const messageContent: any = {
