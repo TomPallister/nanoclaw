@@ -19,11 +19,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import sqlite3
 import subprocess
 import sys
 import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 # ── Globals ─────────────────────────────────────────────────────────────────
@@ -125,9 +127,67 @@ def find_group(groups: list[dict], query: str) -> dict | None:
     return None
 
 
+class _CredentialHandler(BaseHTTPRequestHandler):
+    """Minimal credential proxy — serves GitHub token on demand."""
+    github_token: str = ""
+
+    def do_GET(self):
+        if self.path == "/github-credential" and self.github_token:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(self.github_token.encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, *_args):
+        pass  # Suppress request logs
+
+
+def _detect_proxy_host() -> str:
+    """Detect the correct bind address for the credential proxy.
+
+    macOS (Docker Desktop): 127.0.0.1 — the VM routes host.docker.internal to loopback.
+    Linux: docker0 bridge IP so only containers can reach it.
+    """
+    if platform.system() == "Darwin":
+        return "127.0.0.1"
+    # Linux: get docker0 bridge IP
+    try:
+        result = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", "docker0"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for part in result.stdout.split():
+            if "/" in part and part[0].isdigit():
+                return part.split("/")[0]
+    except Exception:
+        pass
+    sys.exit("error: cannot detect docker0 bridge IP. Set CREDENTIAL_PROXY_HOST or ensure Docker is running.")
+
+
+def _start_credential_proxy(github_token: str) -> tuple[HTTPServer, int]:
+    """Start a minimal HTTP server to serve the GitHub token on demand."""
+    handler = type("Handler", (_CredentialHandler,), {"github_token": github_token})
+    host = _detect_proxy_host()
+    server = HTTPServer((host, 0), handler)  # port 0 = auto-assign
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    dbg(f"credential proxy started on {host}:{port}")
+    return server, port
+
+
 def run_container(runtime: str, image: str, payload: dict, timeout: int = 300) -> None:
     secrets = payload.pop("secrets", {})
     group_folder = payload.get("groupFolder", "main")
+
+    # Start credential proxy for GitHub token (same pattern as main NanoClaw process)
+    github_token = secrets.pop("GITHUB_TOKEN", "")
+    proxy_server = None
+    if github_token:
+        proxy_server, proxy_port = _start_credential_proxy(github_token)
 
     container_name = f"claw-{group_folder}-{os.getpid()}"
     cmd = [runtime, "run", "-i", "--rm", "--name", container_name]
@@ -137,8 +197,13 @@ def run_container(runtime: str, image: str, payload: dict, timeout: int = 300) -
         cmd += ["--add-host=host.docker.internal:host-gateway"]
 
     # Pass secrets as env vars (credential proxy or direct API key)
+    # GITHUB_TOKEN is excluded — it's served via the credential proxy instead
     for key, val in secrets.items():
         cmd += ["-e", f"{key}={val}"]
+
+    # Credential proxy URL for GitHub credential helper and gh wrapper
+    if proxy_server:
+        cmd += ["-e", f"CREDENTIAL_PROXY_URL=http://host.docker.internal:{proxy_port}"]
 
     # Set ANTHROPIC_BASE_URL to credential proxy if the service is running
     # (the proxy injects real credentials so containers don't need them directly)
@@ -272,6 +337,11 @@ def run_container(runtime: str, image: str, payload: dict, timeout: int = 300) -
     else:
         # No structured output — print raw stdout
         print(stdout)
+
+    # Shut down credential proxy
+    if proxy_server:
+        proxy_server.shutdown()
+        dbg("credential proxy stopped")
 
     if proc.returncode not in (0, None):
         sys.exit(proc.returncode)
