@@ -32,6 +32,7 @@ export function startCredentialProxy(
     'CLAUDE_CODE_OAUTH_TOKEN',
     'ANTHROPIC_AUTH_TOKEN',
     'ANTHROPIC_BASE_URL',
+    'GITHUB_TOKEN',
   ]);
 
   const authMode: AuthMode = secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
@@ -46,6 +47,21 @@ export function startCredentialProxy(
 
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
+      // GitHub credential endpoint — returns token as plaintext for
+      // container-side git credential helper and gh CLI wrapper.
+      if (req.url === '/github-credential' && req.method === 'GET') {
+        const ghToken =
+          process.env.GITHUB_TOKEN || secrets.GITHUB_TOKEN || '';
+        if (!ghToken) {
+          res.writeHead(404);
+          res.end('No GitHub token configured');
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end(ghToken);
+        return;
+      }
+
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
