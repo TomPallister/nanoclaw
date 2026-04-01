@@ -19,13 +19,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import platform
 import re
 import sqlite3
 import subprocess
 import sys
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 # ── Globals ─────────────────────────────────────────────────────────────────
@@ -58,6 +56,7 @@ def _find_nanoclaw_dir() -> Path:
 NANOCLAW_DIR = _find_nanoclaw_dir()
 DB_PATH      = NANOCLAW_DIR / "store" / "messages.db"
 ENV_FILE     = NANOCLAW_DIR / ".env"
+DATA_DIR     = NANOCLAW_DIR / "data"
 IMAGE        = "nanoclaw-agent:latest"
 
 SECRET_KEYS = [
@@ -66,7 +65,6 @@ SECRET_KEYS = [
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_AUTH_TOKEN",
     "OLLAMA_HOST",
-    "GITHUB_TOKEN",
 ]
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -95,10 +93,7 @@ def read_secrets(env_file: Path) -> dict:
             key, _, val = line.partition("=")
             key = key.strip()
             if key in SECRET_KEYS:
-                v = val.strip()
-                if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
-                    v = v[1:-1]
-                secrets[key] = v
+                secrets[key] = val.strip()
     return secrets
 
 
@@ -127,126 +122,38 @@ def find_group(groups: list[dict], query: str) -> dict | None:
     return None
 
 
-class _CredentialHandler(BaseHTTPRequestHandler):
-    """Minimal credential proxy — serves GitHub token on demand."""
-    github_token: str = ""
-
-    def do_GET(self):
-        if self.path == "/github-credential" and self.github_token:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.end_headers()
-            self.wfile.write(self.github_token.encode())
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def log_message(self, *_args):
-        pass  # Suppress request logs
-
-
-def _detect_proxy_host() -> str:
-    """Detect the correct bind address for the credential proxy.
-
-    macOS (Docker Desktop): 127.0.0.1 — the VM routes host.docker.internal to loopback.
-    Linux: docker0 bridge IP so only containers can reach it.
-    """
-    if platform.system() == "Darwin":
-        return "127.0.0.1"
-    # Linux: get docker0 bridge IP
-    try:
-        result = subprocess.run(
-            ["ip", "-4", "-o", "addr", "show", "docker0"],
-            capture_output=True, text=True, timeout=5,
-        )
-        for part in result.stdout.split():
-            if "/" in part and part[0].isdigit():
-                return part.split("/")[0]
-    except Exception:
-        pass
-    sys.exit("error: cannot detect docker0 bridge IP. Set CREDENTIAL_PROXY_HOST or ensure Docker is running.")
-
-
-def _start_credential_proxy(github_token: str) -> tuple[HTTPServer, int]:
-    """Start a minimal HTTP server to serve the GitHub token on demand."""
-    handler = type("Handler", (_CredentialHandler,), {"github_token": github_token})
-    host = _detect_proxy_host()
-    server = HTTPServer((host, 0), handler)  # port 0 = auto-assign
-    port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    dbg(f"credential proxy started on {host}:{port}")
-    return server, port
-
-
-def run_container(runtime: str, image: str, payload: dict, timeout: int = 300) -> None:
-    secrets = payload.pop("secrets", {})
-    group_folder = payload.get("groupFolder", "main")
-
-    # Start credential proxy for GitHub token (same pattern as main NanoClaw process)
-    github_token = secrets.pop("GITHUB_TOKEN", "")
-    proxy_server = None
-    if github_token:
-        proxy_server, proxy_port = _start_credential_proxy(github_token)
-
-    container_name = f"claw-{group_folder}-{os.getpid()}"
+def run_container(runtime: str, image: str, payload: dict, secrets: dict, group_folder: str, timeout: int = 300) -> str | None:
+    import time
+    container_name = f"claw-{int(time.time())}"
     cmd = [runtime, "run", "-i", "--rm", "--name", container_name]
 
-    # Add host gateway for credential proxy access
-    if runtime == "docker":
-        cmd += ["--add-host=host.docker.internal:host-gateway"]
+    # Mount session directory for persistence across claw runs
+    session_dir = DATA_DIR / "sessions" / group_folder / ".claude"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    cmd.extend(["-v", f"{session_dir}:/home/node/.claude"])
 
-    # Pass secrets as env vars (credential proxy or direct API key)
-    # GITHUB_TOKEN is excluded — it's served via the credential proxy instead
-    for key, val in secrets.items():
-        cmd += ["-e", f"{key}={val}"]
-
-    # Credential proxy URL for GitHub credential helper and gh wrapper
-    if proxy_server:
-        cmd += ["-e", f"CREDENTIAL_PROXY_URL=http://host.docker.internal:{proxy_port}"]
-
-    # Set ANTHROPIC_BASE_URL to credential proxy if the service is running
-    # (the proxy injects real credentials so containers don't need them directly)
-    if "ANTHROPIC_BASE_URL" not in secrets:
-        cmd += ["-e", "ANTHROPIC_BASE_URL=http://host.docker.internal:3001"]
-
-    # Mount group folder
+    # Mount group workspace
     group_dir = NANOCLAW_DIR / "groups" / group_folder
-    if group_dir.exists():
-        cmd += ["-v", f"{group_dir}:/workspace/group"]
+    group_dir.mkdir(parents=True, exist_ok=True)
+    cmd.extend(["-v", f"{group_dir}:/workspace/group"])
 
-    # Mount global CLAUDE.md
-    global_dir = NANOCLAW_DIR / "groups" / "global"
-    if global_dir.exists():
-        cmd += ["-v", f"{global_dir}:/workspace/global:ro"]
-
-    # Mount Gmail credentials
-    gmail_dir = Path.home() / ".gmail-mcp"
-    if gmail_dir.exists():
-        cmd += ["-v", f"{gmail_dir}:/home/node/.gmail-mcp"]
-
-    # Mount Google Calendar credentials
-    gcal_dir = Path.home() / ".config" / "google-calendar-mcp"
-    if gcal_dir.exists() and (gcal_dir / "gcal-oauth.keys.json").exists():
-        cmd += ["-v", f"{gcal_dir}:/workspace/gcal"]
-
-    # Mount project root read-only (for main group)
-    if payload.get("isMain"):
-        cmd += ["-v", f"{NANOCLAW_DIR}:/workspace/project:ro"]
-
-    # Mount IPC directory
-    ipc_dir = NANOCLAW_DIR / "data" / "ipc" / group_folder
+    # Mount IPC directory (needed for send_message etc)
+    ipc_dir = DATA_DIR / "ipc" / group_folder
     ipc_dir.mkdir(parents=True, exist_ok=True)
-    cmd += ["-v", f"{ipc_dir}:/workspace/ipc"]
+    cmd.extend(["-v", f"{ipc_dir}:/workspace/ipc"])
+
+    # Pass secrets as environment variables
+    for key, value in secrets.items():
+        cmd.extend(["-e", f"{key}={value}"])
 
     cmd.append(image)
     dbg(f"cmd: {' '.join(cmd)}")
 
-    # Show payload sans secrets
+    # Show payload sans secrets (secrets are now passed via env vars)
     if VERBOSE:
-        safe = {k: v for k, v in payload.items() if k != "secrets"}
-        safe["secrets"] = {k: "***" for k in payload.get("secrets", {})}
+        safe = {k: v for k, v in payload.items()}
         dbg(f"payload: {json.dumps(safe, indent=2)}")
+        dbg(f"env vars: {list(secrets.keys())}")
 
     proc = subprocess.Popen(
         cmd,
@@ -281,16 +188,13 @@ def run_container(runtime: str, image: str, payload: dict, timeout: int = 300) -
             # Kill the container as soon as we see the closing sentinel —
             # the Node.js event loop often keeps the process alive indefinitely.
             if line.strip() == "---NANOCLAW_OUTPUT_END---":
-                dbg("output sentinel found, stopping container")
+                dbg("output sentinel found, terminating container")
                 done.set()
                 try:
-                    subprocess.run([runtime, "stop", "-t", "1", container_name],
-                                   capture_output=True, timeout=10)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
+                    subprocess.run([runtime, "kill", container_name], capture_output=True, timeout=2)
+                    dbg(f"container {container_name} killed")
+                except Exception as e:
+                    dbg(f"failed to kill container: {e}")
                 return
 
     t_err = threading.Thread(target=stream_stderr, daemon=True)
@@ -303,9 +207,11 @@ def run_container(runtime: str, image: str, payload: dict, timeout: int = 300) -
         # Also check if process exited naturally
         t_out.join(timeout=2)
         if not done.is_set():
-            subprocess.run([runtime, "stop", "-t", "1", container_name],
-                           capture_output=True, timeout=10)
-            proc.kill()
+            dbg(f"timeout reached, killing container {container_name}")
+            try:
+                subprocess.run([runtime, "kill", container_name], capture_output=True, timeout=5)
+            except Exception as e:
+                dbg(f"failed to kill container on timeout: {e}")
             sys.exit(f"error: container timed out after {timeout}s (no output sentinel received)")
 
     t_err.join(timeout=5)
@@ -329,6 +235,7 @@ def run_container(runtime: str, image: str, payload: dict, timeout: int = 300) -
                 session_id = data.get("newSessionId") or data.get("sessionId")
                 if session_id:
                     print(f"\n[session: {session_id}]", file=sys.stderr)
+                    return session_id
             else:
                 print(f"[{status}] {data.get('result', '')}", file=sys.stderr)
                 sys.exit(1)
@@ -338,13 +245,10 @@ def run_container(runtime: str, image: str, payload: dict, timeout: int = 300) -
         # No structured output — print raw stdout
         print(stdout)
 
-    # Shut down credential proxy
-    if proxy_server:
-        proxy_server.shutdown()
-        dbg("credential proxy stopped")
-
     if proc.returncode not in (0, None):
         sys.exit(proc.returncode)
+
+    return None
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -369,6 +273,8 @@ def main():
                         help="Max seconds to wait for a response (default: 300)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Show debug info: cmd, payload (secrets redacted), stdout lines, exit code")
+    parser.add_argument("-i", "--interactive", action="store_true",
+                        help="Interactive mode: continue conversation after response")
     args = parser.parse_args()
 
     global VERBOSE
@@ -401,6 +307,7 @@ def main():
     # Resolve group → jid
     jid = args.jid
     group_name = None
+    group_folder = None
     is_main = False
 
     if args.group:
@@ -409,6 +316,7 @@ def main():
             sys.exit(f"error: group '{args.group}' not found. Run --list-groups to see options.")
         jid = g["jid"]
         group_name = g["name"]
+        group_folder = g["folder"]
         is_main = g["is_main"]
     elif not jid:
         # Default: main group
@@ -416,6 +324,7 @@ def main():
         if mains:
             jid = mains[0]["jid"]
             group_name = mains[0]["name"]
+            group_folder = mains[0]["folder"]
             is_main = True
         else:
             sys.exit("error: no group specified and no main group found. Use -g or -j.")
@@ -426,33 +335,40 @@ def main():
     if not secrets:
         print("warning: no secrets found in .env — agent may not be authenticated", file=sys.stderr)
 
-    payload: dict = {
-        "prompt": prompt,
-        "chatJid": jid,
-        "isMain": is_main,
-        "secrets": secrets,
-    }
-    # Resolve folder from the matched group
-    group_folder = None
-    if args.group:
-        g = find_group(groups, args.group)
-        if g:
-            group_folder = g["folder"]
-    elif not args.jid:
-        mains = [g for g in groups if g["is_main"]]
-        if mains:
-            group_folder = mains[0]["folder"]
+    current_prompt = prompt
+    current_session = args.session
 
-    if group_folder:
-        payload["groupFolder"] = group_folder
-    elif group_name:
-        payload["groupFolder"] = group_name
-    if args.session:
-        payload["sessionId"] = args.session
-        payload["resumeAt"] = "latest"
+    while True:
+        payload: dict = {
+            "prompt": current_prompt,
+            "chatJid": jid,
+            "isMain": is_main,
+        }
+        if group_folder:
+            payload["groupFolder"] = group_folder
+        if current_session:
+            payload["sessionId"] = current_session
+            payload["resumeAt"] = "latest"
 
-    print(f"[{group_name or jid}] running via {runtime}...", file=sys.stderr)
-    run_container(runtime, args.image, payload, timeout=args.timeout)
+        if not current_session:
+            print(f"[{group_name or jid}] running via {runtime}...", file=sys.stderr)
+
+        session_id = run_container(runtime, args.image, payload, secrets, group_folder or "default", timeout=args.timeout)
+
+        # Interactive mode: prompt for next input
+        if args.interactive and session_id:
+            try:
+                print("\n> ", end="", file=sys.stderr, flush=True)
+                next_prompt = input()
+                if not next_prompt.strip():
+                    break
+                current_prompt = next_prompt
+                current_session = session_id
+            except (EOFError, KeyboardInterrupt):
+                print("\n[exiting]", file=sys.stderr)
+                break
+        else:
+            break
 
 
 if __name__ == "__main__":

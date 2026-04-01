@@ -28,6 +28,7 @@ import {
   PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
+  deleteSession,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -343,6 +344,22 @@ async function runAgent(
     }
 
     if (output.status === 'error') {
+      // Check if the error is due to a missing session file
+      if (
+        output.error &&
+        output.error.includes('No conversation found with session ID')
+      ) {
+        logger.warn(
+          { group: group.name, sessionId, error: output.error },
+          'Session file missing, clearing session and will retry with fresh session',
+        );
+        // Clear the corrupted session from database and memory
+        delete sessions[group.folder];
+        deleteSession(group.folder);
+        // Return error to trigger retry, but now with no session ID (fresh start)
+        return 'error';
+      }
+
       logger.error(
         { group: group.name, error: output.error },
         'Container agent error',
