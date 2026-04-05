@@ -18,10 +18,10 @@ import {
 } from './channels/registry.js';
 import {
   ContainerOutput,
-  runContainerAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { ContainerManager } from './container-manager.js';
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
@@ -75,6 +75,7 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+const containerManager = new ContainerManager();
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -310,63 +311,46 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
-  // Wrap onOutput to track session ID from streamed results
-  const wrappedOnOutput = onOutput
-    ? async (output: ContainerOutput) => {
-        if (output.newSessionId) {
-          sessions[group.folder] = output.newSessionId;
-          setSession(group.folder, output.newSessionId);
-        }
-        await onOutput(output);
-      }
-    : undefined;
+  // Unused in tmux mode — reserved for re-adding session migration later
+  void sessionId;
+
+  // Prefix prompt with image attachment paths so Claude can Read them
+  let finalPrompt = prompt;
+  if (imageAttachments.length > 0) {
+    const attachLines = imageAttachments
+      .map((a) => `[image attached: ${a.relativePath}]`)
+      .join('\n');
+    finalPrompt = `${attachLines}\n\n${prompt}`;
+  }
 
   try {
-    const output = await runContainerAgent(
-      group,
-      {
-        prompt,
-        sessionId,
-        groupFolder: group.folder,
-        chatJid,
-        isMain,
-        assistantName: ASSISTANT_NAME,
-        ...(imageAttachments.length > 0 && { imageAttachments }),
-      },
-      (proc, containerName) =>
-        queue.registerProcess(chatJid, proc, containerName, group.folder),
-      wrappedOnOutput,
-    );
+    // Ensure container is running (idempotent — no-op if already up)
+    await containerManager.ensureRunning(group, chatJid);
 
-    if (output.newSessionId) {
-      sessions[group.folder] = output.newSessionId;
-      setSession(group.folder, output.newSessionId);
+    // Register a per-call output listener that streams chunks to the caller
+    let unsubscribe: (() => void) | null = null;
+    if (onOutput) {
+      const listener = async (gf: string, out: {
+        text: string;
+        toolUses: Array<{ name: string; input: unknown }>;
+        stopReason: string | null;
+      }) => {
+        if (gf !== group.folder) return;
+        if (!out.text) return; // skip tool-use-only events
+        const containerOutput: ContainerOutput = {
+          status: 'success',
+          result: out.text,
+        };
+        await onOutput(containerOutput);
+      };
+      unsubscribe = containerManager.onOutput(listener);
     }
 
-    if (output.status === 'error') {
-      // Check if the error is due to a missing session file
-      if (
-        output.error &&
-        output.error.includes('No conversation found with session ID')
-      ) {
-        logger.warn(
-          { group: group.name, sessionId, error: output.error },
-          'Session file missing, clearing session and will retry with fresh session',
-        );
-        // Clear the corrupted session from database and memory
-        delete sessions[group.folder];
-        deleteSession(group.folder);
-        // Return error to trigger retry, but now with no session ID (fresh start)
-        return 'error';
-      }
+    // Send + wait for turn-complete
+    await containerManager.sendMessage(group.folder, finalPrompt);
 
-      logger.error(
-        { group: group.name, error: output.error },
-        'Container agent error',
-      );
-      return 'error';
-    }
-
+    if (unsubscribe) unsubscribe();
+    void isMain;
     return 'success';
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
@@ -516,6 +500,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
     await queue.shutdown(10000);
+    await containerManager.stopAll();
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
   };
@@ -645,6 +630,10 @@ async function main(): Promise<void> {
       const text = formatOutbound(rawText);
       if (text) await channel.sendMessage(jid, text);
     },
+    sendToAgent: async (group, chatJid, text) => {
+      await containerManager.ensureRunning(group, chatJid);
+      await containerManager.sendMessage(group.folder, text);
+    },
   });
   startIpcWatcher({
     sendMessage: (jid, text) => {
@@ -711,6 +700,19 @@ async function main(): Promise<void> {
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);
+
+  // Boot a persistent container for each registered group (eager lifecycle)
+  for (const [chatJid, group] of Object.entries(registeredGroups)) {
+    try {
+      await containerManager.ensureRunning(group, chatJid);
+    } catch (err) {
+      logger.error(
+        { group: group.name, err },
+        'Failed to start container at boot',
+      );
+    }
+  }
+
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');

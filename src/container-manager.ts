@@ -16,16 +16,13 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { CONTAINER_IMAGE, DATA_DIR, TIMEZONE } from './config.js';
+import { CONTAINER_IMAGE, TIMEZONE } from './config.js';
 import {
   CONTAINER_HOST_GATEWAY,
   CONTAINER_RUNTIME_BIN,
   hostGatewayArgs,
 } from './container-runtime.js';
-import {
-  getGroupClaudeSessionId,
-  setGroupClaudeSessionId,
-} from './db.js';
+import { getGroupClaudeSessionId, setGroupClaudeSessionId } from './db.js';
 import { logger } from './logger.js';
 import { resolveGroupIpcPath } from './group-folder.js';
 import type { RegisteredGroup } from './types.js';
@@ -46,7 +43,9 @@ export type OutputListener = (
   output: AssistantOutput,
 ) => void | Promise<void>;
 
-export type TurnCompleteListener = (groupFolder: string) => void | Promise<void>;
+export type TurnCompleteListener = (
+  groupFolder: string,
+) => void | Promise<void>;
 
 interface ContainerState {
   group: RegisteredGroup;
@@ -71,19 +70,24 @@ export class ContainerManager {
   private turnCompleteListeners: TurnCompleteListener[] = [];
   private stopping = false;
 
-  onOutput(listener: OutputListener): void {
+  onOutput(listener: OutputListener): () => void {
     this.outputListeners.push(listener);
+    return () => {
+      const idx = this.outputListeners.indexOf(listener);
+      if (idx !== -1) this.outputListeners.splice(idx, 1);
+    };
   }
 
-  onTurnComplete(listener: TurnCompleteListener): void {
+  onTurnComplete(listener: TurnCompleteListener): () => void {
     this.turnCompleteListeners.push(listener);
+    return () => {
+      const idx = this.turnCompleteListeners.indexOf(listener);
+      if (idx !== -1) this.turnCompleteListeners.splice(idx, 1);
+    };
   }
 
   /** Idempotent: creates or adopts the container for this group. */
-  async ensureRunning(
-    group: RegisteredGroup,
-    chatJid: string,
-  ): Promise<void> {
+  async ensureRunning(group: RegisteredGroup, chatJid: string): Promise<void> {
     const existing = this.states.get(group.folder);
     if (existing) {
       if (this.isContainerRunning(existing.containerName)) return;
@@ -311,10 +315,7 @@ export class ContainerManager {
     args.push('-e', `TZ=${TIMEZONE}`);
 
     // Credential proxy routing (containers never see real secrets)
-    args.push(
-      '-e',
-      `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:9222`,
-    );
+    args.push('-e', `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:9222`);
     args.push(
       '-e',
       `CREDENTIAL_PROXY_URL=http://${CONTAINER_HOST_GATEWAY}:9222`,
@@ -333,14 +334,8 @@ export class ContainerManager {
       '-e',
       `NANOCLAW_MCP_CONFIG_JSON=${this.buildMcpConfigJson(group)}`,
     );
-    args.push(
-      '-e',
-      `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`,
-    );
-    args.push(
-      '-e',
-      `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`,
-    );
+    args.push('-e', `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`);
+    args.push('-e', `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`);
     args.push('-e', `CLAUDE_CODE_DISABLE_AUTO_MEMORY=0`);
 
     // Host gateway for Linux
@@ -405,7 +400,10 @@ export class ContainerManager {
 
   // --- Output / turn-complete watchers ---
 
-  private startOutputWatchers(state: ContainerState, groupIpcDir: string): void {
+  private startOutputWatchers(
+    state: ContainerState,
+    groupIpcDir: string,
+  ): void {
     const outputDir = path.join(groupIpcDir, 'output');
     const turnCompleteDir = path.join(groupIpcDir, 'turn-complete');
     fs.mkdirSync(outputDir, { recursive: true });
@@ -521,10 +519,7 @@ export class ContainerManager {
       try {
         await this.ensureRunning(group, chatJid);
       } catch (err) {
-        logger.error(
-          { group: group.name, err },
-          'Restart failed',
-        );
+        logger.error({ group: group.name, err }, 'Restart failed');
       }
     }
   }
