@@ -102,7 +102,7 @@ Written in Node (not shell) to share code with the rest of the runner.
 
 ### `container/entrypoint.sh` (modified)
 
-- Writes `.mcp.json` to `/workspace/group` from env-provided MCP config.
+- Writes **`/etc/claude-code/managed-mcp.json`** from env-provided MCP config (managed scope — auto-trusted, no approval prompt, cannot be modified by user).
 - Starts tmux server detached: `tmux new-session -d -s nanoclaw`.
 - Determines whether this is first boot (no saved session id) or resume.
 - Sends the `claude ...` command to the tmux window via `send-keys`.
@@ -220,7 +220,7 @@ Single cutover, not a parallel path:
 2. **Bracketed paste compatibility.** Spec uses `tmux load-buffer` + `paste-buffer -p` + `send-keys Enter` to handle multi-line prompts. This relies on Claude Code's TUI recognizing bracketed-paste escape sequences (which modern TUIs universally do, Claude Code included). **Must verify with a prototype** that: (a) pasted newlines become literal content not submits, (b) the trailing Enter reliably submits, (c) very long prompts don't get truncated or rate-limited by terminal input buffers.
 3. **IPC mid-turn messages.** Currently the container's agent-runner polls `/workspace/ipc/input/` to receive follow-up messages mid-query. With tmux model, "follow-up" messages are just queued until turn-complete (per user decision). This is a behavior change from current IPC semantics — user accepted.
 4. **Resource use.** N registered groups = N always-on containers. Each claude process uses ~200-400MB. At 10 groups that's 2-4GB resident. Acceptable for personal assistant use case.
-5. **`.mcp.json` auto-loading.** Need to confirm Claude Code picks up `.mcp.json` from cwd automatically in interactive mode, or whether `--mcp-config` flag is required.
+5. ~~`.mcp.json` auto-loading.~~ **Resolved.** Project-scope `.mcp.json` auto-loads but triggers a trust-approval prompt that would hang the non-interactive tmux session. Design uses **managed scope** (`/etc/claude-code/managed-mcp.json`) instead — auto-trusted, no prompt, exclusive control over MCP set. Written by `entrypoint.sh` at container start.
 
 ## Changes to Existing Files (Summary)
 
