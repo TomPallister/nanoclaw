@@ -126,6 +126,7 @@ export class ContainerManager {
       sessionId,
       resume,
       group,
+      chatJid,
     );
 
     logger.info(
@@ -308,6 +309,7 @@ export class ContainerManager {
     sessionId: string,
     resume: boolean,
     group: RegisteredGroup,
+    chatJid: string,
   ): string[] {
     const args: string[] = ['run', '-d', '--name', containerName];
 
@@ -346,6 +348,11 @@ export class ContainerManager {
     args.push('-e', `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`);
     args.push('-e', `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`);
     args.push('-e', `CLAUDE_CODE_DISABLE_AUTO_MEMORY=0`);
+
+    // Env vars consumed by the nanoclaw IPC MCP server (reads chat/group context)
+    args.push('-e', `NANOCLAW_CHAT_JID=${chatJid}`);
+    args.push('-e', `NANOCLAW_GROUP_FOLDER=${group.folder}`);
+    args.push('-e', `NANOCLAW_IS_MAIN=${group.isMain ? '1' : '0'}`);
 
     // Host gateway for Linux
     args.push(...hostGatewayArgs());
@@ -391,11 +398,13 @@ export class ContainerManager {
   }
 
   private buildMcpConfigJson(_group: RegisteredGroup): string {
-    // Mirror the MCP servers from container/agent-runner/src/index.ts
+    // Mirror the MCP servers from container/agent-runner/src/index.ts.
+    // Paths assume the image was built with the agent-runner TypeScript
+    // compiled into /app/dist/ (Dockerfile runs `npm run build`).
     const mcpServers: Record<string, unknown> = {
       nanoclaw: {
         command: 'node',
-        args: ['/app/mcp-servers/nanoclaw-ipc/index.js'],
+        args: ['/app/dist/ipc-mcp-stdio.js'],
       },
       gmail: { command: 'gmail-mcp' },
       'google-calendar': { command: 'google-calendar-mcp' },
