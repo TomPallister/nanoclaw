@@ -76,17 +76,28 @@ State per group:
 interface ContainerState {
   containerName: string;            // nanoclaw-<sanitized-group>
   sessionId: string;                // persistent, stored in db
-  queue: string[];                  // pending user messages
-  turnInProgress: boolean;
+  mergeBuffer: string[];            // text parts within current debounce window
+  mergeTimer: NodeJS.Timeout | null;// 2s debounce; resets on each new message
+  turnInProgress: boolean;          // tracked for output routing, NOT send gating
   lastActivity: number;
 }
 ```
 
-### `MessageQueue` (per-group FIFO, lives inside ContainerManager)
+Constants:
+- `MERGE_WINDOW_MS = 2000` — debounce window for combining bursty messages
 
-- When user sends msg while `turnInProgress === true`, append to queue.
-- When `turnInProgress` flips false (turn-complete signal received), dequeue next and send.
-- Queue survives in-memory only; if NanoClaw restarts, undelivered queued messages are dropped (acceptable trade-off).
+### `MergeWindow` (per-group debounce buffer, lives inside ContainerManager)
+
+Model: **pipe mid-turn with a 2-second merge window**. We do NOT block on turn-completion before sending — Claude Code's TUI accepts input while streaming and queues it as the next user turn internally.
+
+- When a message arrives: append to the group's pending-text buffer and (re)start a 2s debounce timer.
+- When the timer fires (no new messages for 2s): flush the buffer — inject the accumulated text into the tmux pane (paste-buffer + Enter) as a single user turn.
+- Buffer is plain string concatenation with `\n\n` between parts, preserving order.
+- Buffer survives in-memory only; if NanoClaw restarts, undelivered buffered messages are dropped (acceptable trade-off).
+
+Turn-complete signals from the transcript watcher are still tracked — they drive output routing (channel send happens on `stop_reason: "end_turn"`), just not the send gate.
+
+**Fallback behavior** (if prototype shows TUI does NOT accept input during streaming): revert to queued mode — hold the merge-window buffer until turn-complete, then flush. Code is structured so switching between the two is a config flag.
 
 ### `transcript-watcher` (new sidecar, runs inside container)
 
@@ -120,15 +131,14 @@ Written in Node (not shell) to share code with the rest of the runner.
 1. Channel receives message → `storeMessage(msg)` (unchanged).
 2. `processGroupMessages` picks it up, formats the prompt as today.
 3. Instead of `runContainerAgent`, calls `containerManager.sendMessage(group, prompt)`.
-4. If `turnInProgress`: enqueued.
-5. If idle: inject prompt into tmux pane via **bracketed paste**:
+4. Append prompt to `mergeBuffer`; clear existing `mergeTimer` and start fresh 2s timer.
+5. When timer fires: flush `mergeBuffer` joined with `\n\n` and inject into tmux pane via **bracketed paste**:
    ```bash
-   printf '%s' "$prompt" | docker exec -i <container> tmux load-buffer -
+   printf '%s' "$merged" | docker exec -i <container> tmux load-buffer -
    docker exec <container> tmux paste-buffer -p -t nanoclaw:main     # -p = bracketed paste
    docker exec <container> tmux send-keys -t nanoclaw:main Enter
    ```
-   `-p` wraps the paste in bracketed-paste escape sequences so Claude Code's TUI treats embedded newlines as literal content (not submit). The separate `Enter` is what actually submits the turn. This is more robust than `send-keys -l` for multi-line messages.
-6. `turnInProgress = true`.
+   `-p` wraps the paste in bracketed-paste escape sequences so Claude Code's TUI treats embedded newlines as literal content (not submit). The separate `Enter` submits. Sends are NOT gated on `turnInProgress` — Claude Code's TUI queues mid-stream input as the next user turn.
 
 ### Outbound (claude → user)
 
@@ -218,7 +228,7 @@ Single cutover, not a parallel path:
 
 1. **`--session-id` flag existence.** I'm asserting this flag exists on `claude` CLI based on prior knowledge. **Must verify** by running `claude --help` on the target CLI version (2.1.86 per Dockerfile) during implementation. If absent, fall back to detecting session ID from newest `.jsonl` file after claude startup.
 2. **Bracketed paste compatibility.** Spec uses `tmux load-buffer` + `paste-buffer -p` + `send-keys Enter` to handle multi-line prompts. This relies on Claude Code's TUI recognizing bracketed-paste escape sequences (which modern TUIs universally do, Claude Code included). **Must verify with a prototype** that: (a) pasted newlines become literal content not submits, (b) the trailing Enter reliably submits, (c) very long prompts don't get truncated or rate-limited by terminal input buffers.
-3. **IPC mid-turn messages.** Currently the container's agent-runner polls `/workspace/ipc/input/` to receive follow-up messages mid-query. With tmux model, "follow-up" messages are just queued until turn-complete (per user decision). This is a behavior change from current IPC semantics — user accepted.
+3. **TUI mid-stream input acceptance.** Design assumes Claude Code's TUI accepts typed/pasted input while a response is streaming, queuing it as the next user turn. **Must verify during prototype.** If the TUI rejects or drops mid-stream input, the MergeWindow falls back to gated mode (wait for turn-complete before flushing buffer). Code structured for easy switch via config flag.
 4. ~~Resource use.~~ **Not a concern in practice.** User runs one active group (WhatsApp main), so one always-on container (~200–400MB). If additional groups are registered later but rarely used, mitigation is to switch those to lazy lifecycle (spin up on first message, shut down after idle); main group stays eager.
 5. ~~`.mcp.json` auto-loading.~~ **Resolved.** Project-scope `.mcp.json` auto-loads but triggers a trust-approval prompt that would hang the non-interactive tmux session. Design uses **managed scope** (`/etc/claude-code/managed-mcp.json`) instead — auto-trusted, no prompt, exclusive control over MCP set. Written by `entrypoint.sh` at container start.
 
