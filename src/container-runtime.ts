@@ -8,8 +8,31 @@ import os from 'os';
 
 import { logger } from './logger.js';
 
-/** The container runtime binary name. */
-export const CONTAINER_RUNTIME_BIN = 'docker';
+/**
+ * The container runtime binary name.
+ * Honours $CONTAINER_RUNTIME env var, otherwise prefers `docker`, falls back to `podman`.
+ * Detection happens at module load time so callers can use it as a constant.
+ */
+function detectRuntimeBin(): string {
+  if (process.env.CONTAINER_RUNTIME) return process.env.CONTAINER_RUNTIME;
+  // Check PATH for docker first, then podman
+  for (const bin of ['docker', 'podman']) {
+    try {
+      execFileSync('which', [bin], { stdio: 'pipe' });
+      return bin;
+    } catch {
+      /* not in path */
+    }
+  }
+  // Also check common absolute paths
+  for (const p of ['/opt/podman/bin/podman', '/usr/local/bin/podman']) {
+    if (fs.existsSync(p)) return p;
+  }
+  // Default — caller will get a clear error from ensureContainerRuntimeRunning
+  return 'docker';
+}
+
+export const CONTAINER_RUNTIME_BIN = detectRuntimeBin();
 
 /** Hostname containers use to reach the host machine. */
 export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
