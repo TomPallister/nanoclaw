@@ -121,7 +121,13 @@ Written in Node (not shell) to share code with the rest of the runner.
 2. `processGroupMessages` picks it up, formats the prompt as today.
 3. Instead of `runContainerAgent`, calls `containerManager.sendMessage(group, prompt)`.
 4. If `turnInProgress`: enqueued.
-5. If idle: `docker exec <container> tmux send-keys -t nanoclaw:main -l "<prompt>" Enter`.
+5. If idle: inject prompt into tmux pane via **bracketed paste**:
+   ```bash
+   printf '%s' "$prompt" | docker exec -i <container> tmux load-buffer -
+   docker exec <container> tmux paste-buffer -p -t nanoclaw:main     # -p = bracketed paste
+   docker exec <container> tmux send-keys -t nanoclaw:main Enter
+   ```
+   `-p` wraps the paste in bracketed-paste escape sequences so Claude Code's TUI treats embedded newlines as literal content (not submit). The separate `Enter` is what actually submits the turn. This is more robust than `send-keys -l` for multi-line messages.
 6. `turnInProgress = true`.
 
 ### Outbound (claude → user)
@@ -211,7 +217,7 @@ Single cutover, not a parallel path:
 ## Open Questions / Risks
 
 1. **`--session-id` flag existence.** I'm asserting this flag exists on `claude` CLI based on prior knowledge. **Must verify** by running `claude --help` on the target CLI version (2.1.86 per Dockerfile) during implementation. If absent, fall back to detecting session ID from newest `.jsonl` file after claude startup.
-2. **Input escaping.** `tmux send-keys -l` with `-l` flag treats input literally (no escape interpretation) but multi-line messages and shell-special chars need verification. May need to write prompt to a file and `send-keys "cat /tmp/prompt.txt | claude-input"` — but Claude Code doesn't have a pipe-input mode in interactive mode, so this is a real problem. **Must prototype early.**
+2. **Bracketed paste compatibility.** Spec uses `tmux load-buffer` + `paste-buffer -p` + `send-keys Enter` to handle multi-line prompts. This relies on Claude Code's TUI recognizing bracketed-paste escape sequences (which modern TUIs universally do, Claude Code included). **Must verify with a prototype** that: (a) pasted newlines become literal content not submits, (b) the trailing Enter reliably submits, (c) very long prompts don't get truncated or rate-limited by terminal input buffers.
 3. **IPC mid-turn messages.** Currently the container's agent-runner polls `/workspace/ipc/input/` to receive follow-up messages mid-query. With tmux model, "follow-up" messages are just queued until turn-complete (per user decision). This is a behavior change from current IPC semantics — user accepted.
 4. **Resource use.** N registered groups = N always-on containers. Each claude process uses ~200-400MB. At 10 groups that's 2-4GB resident. Acceptable for personal assistant use case.
 5. **`.mcp.json` auto-loading.** Need to confirm Claude Code picks up `.mcp.json` from cwd automatically in interactive mode, or whether `--mcp-config` flag is required.
