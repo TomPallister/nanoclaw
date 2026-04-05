@@ -1,0 +1,8 @@
+{
+  "name": "nanoclaw-transcript-watcher",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Tails Claude Code transcript JSONL and emits IPC output events",
+  "main": "index.js",
+  "engines": { "node": ">=20" }
+}
