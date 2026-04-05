@@ -18,15 +18,16 @@ set -e
 
 # 1. Write managed MCP config (auto-trusted, no approval prompt).
 # /etc/claude-code is world-writable via Dockerfile, no sudo needed.
+# Use printf instead of echo so JSON backslash escapes aren't interpreted.
 if [ -n "${NANOCLAW_MCP_CONFIG_JSON:-}" ]; then
   mkdir -p /etc/claude-code
-  echo "$NANOCLAW_MCP_CONFIG_JSON" > /etc/claude-code/managed-mcp.json
+  printf '%s\n' "$NANOCLAW_MCP_CONFIG_JSON" > /etc/claude-code/managed-mcp.json
 fi
 
 # 2. Pre-seed ~/.claude/settings.json to skip bypass-permissions warning dialog.
 mkdir -p "${HOME:-/home/node}/.claude"
 if [ ! -f "${HOME:-/home/node}/.claude/settings.json" ]; then
-  echo '{"skipDangerousModePermissionPrompt":true}' > "${HOME:-/home/node}/.claude/settings.json"
+  printf '%s\n' '{"skipDangerousModePermissionPrompt":true}' > "${HOME:-/home/node}/.claude/settings.json"
 fi
 
 # Pre-seed ~/.claude.json to skip first-run onboarding prompts

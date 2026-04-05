@@ -29,6 +29,10 @@ import type { RegisteredGroup } from './types.js';
 
 const MERGE_WINDOW_MS = 2000;
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
+const TURN_TIMEOUT_MS = parseInt(
+  process.env.NANOCLAW_TURN_TIMEOUT_MS || '900000', // 15 min default
+  10,
+);
 
 export interface AssistantOutput {
   text: string;
@@ -69,8 +73,6 @@ interface ContainerState {
   ipcOutputWatcher: fs.FSWatcher | null;
   ipcTurnCompleteWatcher: fs.FSWatcher | null;
   healthTimer: NodeJS.Timeout | null;
-  processedOutputFiles: Set<string>;
-  processedTurnCompleteFiles: Set<string>;
   /** Serializes output listener invocations per-group so outbound messages preserve order. */
   outputDeliveryChain: Promise<void>;
 }
@@ -135,17 +137,28 @@ export class ContainerManager {
       /* no existing container */
     }
 
-    // Load or generate session id
-    let sessionId = getGroupClaudeSessionId(chatJid);
-    const resume = sessionId !== null;
-    if (!sessionId) {
-      sessionId = randomUUID();
-      setGroupClaudeSessionId(chatJid, sessionId);
-    }
-
     // Build mounts (imported from container-runner to share logic)
     const { buildVolumeMounts } = await import('./container-runner.js');
     const mounts = buildVolumeMounts(group, group.isMain ?? false);
+
+    // Load session id, but only use `--resume` if the transcript file
+    // actually exists on disk. Otherwise claude would error with
+    // "No conversation found with session ID" and crash-loop.
+    let sessionId = getGroupClaudeSessionId(chatJid);
+    let resume = false;
+    const isNewSession = sessionId === null;
+    if (sessionId) {
+      resume = this.transcriptExists(mounts, sessionId);
+      if (!resume) {
+        logger.warn(
+          { group: group.name, sessionId },
+          'Stored session id has no transcript on disk, starting fresh',
+        );
+        sessionId = randomUUID();
+      }
+    } else {
+      sessionId = randomUUID();
+    }
 
     const args = this.buildRunArgs(
       containerName,
@@ -161,6 +174,12 @@ export class ContainerManager {
       'Starting persistent container',
     );
     execFileSync(CONTAINER_RUNTIME_BIN, args, { stdio: 'pipe' });
+
+    // Persist session id only AFTER successful container start so a failed
+    // run doesn't leave a dangling session id in the DB.
+    if (isNewSession || !resume) {
+      setGroupClaudeSessionId(chatJid, sessionId);
+    }
 
     // Set up state
     const groupIpcDir = resolveGroupIpcPath(group.folder);
@@ -179,8 +198,6 @@ export class ContainerManager {
       ipcOutputWatcher: null,
       ipcTurnCompleteWatcher: null,
       healthTimer: null,
-      processedOutputFiles: new Set(),
-      processedTurnCompleteFiles: new Set(),
       outputDeliveryChain: Promise.resolve(),
     };
     this.states.set(group.folder, state);
@@ -214,9 +231,35 @@ export class ContainerManager {
       MERGE_WINDOW_MS,
     );
 
-    // Promise resolved when THIS batch's turn-complete arrives (FIFO match)
+    // Promise resolved when THIS batch's turn-complete arrives (FIFO match).
+    // Wrap resolve/reject with a turn-timeout so a hung claude can't block
+    // the caller indefinitely. Settling the promise clears the timer.
     return new Promise<void>((resolve, reject) => {
-      state.mergeBufferResolvers.push({ resolve, reject });
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(
+          new Error(
+            `Turn timeout after ${TURN_TIMEOUT_MS}ms waiting for claude response`,
+          ),
+        );
+      }, TURN_TIMEOUT_MS);
+      const resolver: FlushResolver = {
+        resolve: () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (err: Error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        },
+      };
+      state.mergeBufferResolvers.push(resolver);
     });
   }
 
@@ -339,6 +382,35 @@ export class ContainerManager {
         'Failed to inject message via tmux',
       );
       rejectBatch(err instanceof Error ? err : new Error('inject failed'));
+    }
+  }
+
+  /** Check whether claude has a transcript file for the given session id.
+   *  Uses the host-side path of the mounted .claude/ directory. */
+  private transcriptExists(
+    mounts: Array<{
+      hostPath: string;
+      containerPath: string;
+      readonly: boolean;
+    }>,
+    sessionId: string,
+  ): boolean {
+    const claudeMount = mounts.find(
+      (m) => m.containerPath === '/home/node/.claude',
+    );
+    if (!claudeMount) return false;
+    // Transcript path inside container is .claude/projects/-workspace-group/<id>.jsonl
+    // The '-workspace-group' hash is the container's cwd (/workspace/group).
+    const transcriptPath = path.join(
+      claudeMount.hostPath,
+      'projects',
+      '-workspace-group',
+      `${sessionId}.jsonl`,
+    );
+    try {
+      return fs.statSync(transcriptPath).isFile();
+    } catch {
+      return false;
     }
   }
 
@@ -483,12 +555,22 @@ export class ContainerManager {
     fs.mkdirSync(outputDir, { recursive: true });
     fs.mkdirSync(turnCompleteDir, { recursive: true });
 
-    // Mark any existing files as processed (from previous boot)
+    // Delete any stale files from a previous run — they correspond to flush
+    // queue state that no longer exists, so processing them would misalign
+    // the FIFO queue. Fresh start.
     for (const name of safeReaddir(outputDir)) {
-      state.processedOutputFiles.add(name);
+      try {
+        fs.unlinkSync(path.join(outputDir, name));
+      } catch {
+        /* ignore */
+      }
     }
     for (const name of safeReaddir(turnCompleteDir)) {
-      state.processedTurnCompleteFiles.add(name);
+      try {
+        fs.unlinkSync(path.join(turnCompleteDir, name));
+      } catch {
+        /* ignore */
+      }
     }
 
     state.ipcOutputWatcher = fs.watch(
@@ -514,13 +596,17 @@ export class ContainerManager {
   private processOutputDir(state: ContainerState, dir: string): void {
     const entries = safeReaddir(dir).sort();
     for (const name of entries) {
-      if (state.processedOutputFiles.has(name)) continue;
-      state.processedOutputFiles.add(name);
+      // Skip .tmp files — container writes tmp then renames atomically.
+      // Reading/deleting a .tmp would race the container's rename.
+      if (!name.endsWith('.json')) continue;
+      const filePath = path.join(dir, name);
       let content: string;
       try {
-        content = fs.readFileSync(path.join(dir, name), 'utf-8');
+        content = fs.readFileSync(filePath, 'utf-8');
       } catch {
-        continue; // file may be mid-write or already consumed
+        // File raced-deleted by another handler or still mid-write; skip.
+        // Will be retried on the next fs.watch tick if it still exists.
+        continue;
       }
       let ev: {
         text?: string;
@@ -532,7 +618,13 @@ export class ContainerManager {
       try {
         ev = JSON.parse(content);
       } catch (err) {
-        logger.warn({ err, name }, 'Failed to parse output file');
+        logger.warn({ err, name }, 'Failed to parse output file, deleting');
+        // Delete corrupted file so we don't loop on it forever.
+        try {
+          fs.unlinkSync(filePath);
+        } catch {
+          /* already gone */
+        }
         continue;
       }
       const output: AssistantOutput = {
@@ -557,22 +649,30 @@ export class ContainerManager {
           }
         }
       });
-      // Delete the file — we've consumed it. The processed-set entry can be
-      // pruned too since the filename won't reappear after unlink.
+      // Delete the file synchronously (before the async delivery runs) so a
+      // second fs.watch event for the same file doesn't re-queue delivery.
       try {
-        fs.unlinkSync(path.join(dir, name));
+        fs.unlinkSync(filePath);
       } catch {
         /* already gone */
       }
-      state.processedOutputFiles.delete(name);
     }
   }
 
   private processTurnCompleteDir(state: ContainerState, dir: string): void {
     const entries = safeReaddir(dir).sort();
     for (const name of entries) {
-      if (state.processedTurnCompleteFiles.has(name)) continue;
-      state.processedTurnCompleteFiles.add(name);
+      if (!name.endsWith('.json')) continue;
+      const filePath = path.join(dir, name);
+      // Delete FIRST so a re-fired fs.watch event doesn't reprocess the same
+      // turn-complete marker (which would spuriously shift the flush queue).
+      try {
+        fs.unlinkSync(filePath);
+      } catch {
+        // Already gone — raced with another handler; skip.
+        continue;
+      }
+
       state.turnInProgress = false;
       logger.debug({ group: state.group.name }, 'Turn complete');
 
@@ -600,14 +700,6 @@ export class ContainerManager {
       if (state.pendingFlush) {
         this.flushNow(state);
       }
-
-      // Delete the processed file and prune the set entry.
-      try {
-        fs.unlinkSync(path.join(dir, name));
-      } catch {
-        /* already gone */
-      }
-      state.processedTurnCompleteFiles.delete(name);
     }
   }
 

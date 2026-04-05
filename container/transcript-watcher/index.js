@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 
 const SESSION_ID = process.env.NANOCLAW_SESSION_ID;
 if (!SESSION_ID) {
@@ -56,8 +57,18 @@ function writeJson(dir, content) {
   const rand = Math.random().toString(36).slice(2, 8);
   const file = path.join(dir, `${ts}-${rand}.json`);
   const tmp = file + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(content) + '\n');
-  fs.renameSync(tmp, file); // atomic so host watcher sees complete file
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(content) + '\n');
+    fs.renameSync(tmp, file); // atomic so host watcher sees complete file
+  } catch (err) {
+    console.error(`[watcher] writeJson failed for ${file}: ${err.message}`);
+    // Best-effort cleanup of stray tmp
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 function handleLine(line) {
@@ -104,6 +115,8 @@ function handleLine(line) {
 async function tailFile(filepath) {
   let pos = 0;
   let buffer = '';
+  // StringDecoder handles UTF-8 sequences that span read boundaries correctly.
+  const decoder = new StringDecoder('utf8');
   while (true) {
     try {
       const stat = fs.statSync(filepath);
@@ -114,12 +127,18 @@ async function tailFile(filepath) {
         fs.readSync(fd, buf, 0, len, pos);
         fs.closeSync(fd);
         pos = stat.size;
-        buffer += buf.toString('utf-8');
+        buffer += decoder.write(buf);
         let nl;
         while ((nl = buffer.indexOf('\n')) !== -1) {
           const line = buffer.slice(0, nl);
           buffer = buffer.slice(nl + 1);
-          if (line.trim()) handleLine(line);
+          if (line.trim()) {
+            try {
+              handleLine(line);
+            } catch (err) {
+              console.error(`[watcher] handleLine threw: ${err.message}`);
+            }
+          }
         }
       } else if (stat.size < pos) {
         // File rotated/truncated — restart from beginning
