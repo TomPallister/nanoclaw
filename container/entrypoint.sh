@@ -16,11 +16,11 @@ set -e
 
 : "${NANOCLAW_SESSION_ID:?NANOCLAW_SESSION_ID is required}"
 
-# 1. Write managed MCP config (auto-trusted, no approval prompt)
+# 1. Write managed MCP config (auto-trusted, no approval prompt).
+# /etc/claude-code is world-writable via Dockerfile, no sudo needed.
 if [ -n "${NANOCLAW_MCP_CONFIG_JSON:-}" ]; then
-  mkdir -p /etc/claude-code 2>/dev/null || sudo mkdir -p /etc/claude-code
-  echo "$NANOCLAW_MCP_CONFIG_JSON" > /etc/claude-code/managed-mcp.json \
-    || echo "$NANOCLAW_MCP_CONFIG_JSON" | sudo tee /etc/claude-code/managed-mcp.json >/dev/null
+  mkdir -p /etc/claude-code
+  echo "$NANOCLAW_MCP_CONFIG_JSON" > /etc/claude-code/managed-mcp.json
 fi
 
 # 2. Pre-seed ~/.claude/settings.json to skip bypass-permissions warning dialog.
@@ -73,9 +73,12 @@ if [ -n "${NANOCLAW_ADDITIONAL_DIRS:-}" ]; then
   done
 fi
 if [ -n "${NANOCLAW_APPEND_SYSTEM_PROMPT:-}" ]; then
-  # Escape double-quotes in system prompt for safe embedding
-  ESCAPED_PROMPT="${NANOCLAW_APPEND_SYSTEM_PROMPT//\"/\\\"}"
-  CLAUDE_CMD="${CLAUDE_CMD} --append-system-prompt \"${ESCAPED_PROMPT}\""
+  # Write the system prompt to a file and use command substitution — avoids
+  # shell quoting pitfalls with multi-line prompts or embedded special chars
+  # when the whole CLAUDE_CMD is later pasted via tmux send-keys.
+  SYSPROMPT_FILE="/tmp/nanoclaw-system-prompt.txt"
+  printf '%s' "$NANOCLAW_APPEND_SYSTEM_PROMPT" > "$SYSPROMPT_FILE"
+  CLAUDE_CMD="${CLAUDE_CMD} --append-system-prompt \"\$(cat ${SYSPROMPT_FILE})\""
 fi
 
 echo "[entrypoint] starting claude: ${CLAUDE_CMD}" >&2

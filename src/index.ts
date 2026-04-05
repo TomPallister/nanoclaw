@@ -28,10 +28,8 @@ import {
   PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
-  deleteSession,
   getAllChats,
   getAllRegisteredGroups,
-  getAllSessions,
   getAllTasks,
   getMessagesSince,
   getNewMessages,
@@ -39,7 +37,6 @@ import {
   initDatabase,
   setRegisteredGroup,
   setRouterState,
-  setSession,
   storeChatMetadata,
   storeMessage,
 } from './db.js';
@@ -68,7 +65,6 @@ import { logger } from './logger.js';
 export { escapeXml, formatMessages } from './router.js';
 
 let lastTimestamp = '';
-let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
@@ -86,7 +82,6 @@ function loadState(): void {
     logger.warn('Corrupted last_agent_timestamp in DB, resetting');
     lastAgentTimestamp = {};
   }
-  sessions = getAllSessions();
   registeredGroups = getAllRegisteredGroups();
   logger.info(
     { groupCount: Object.keys(registeredGroups).length },
@@ -284,7 +279,6 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -310,9 +304,6 @@ async function runAgent(
     availableGroups,
     new Set(Object.keys(registeredGroups)),
   );
-
-  // Unused in tmux mode — reserved for re-adding session migration later
-  void sessionId;
 
   // Prefix prompt with image attachment paths so Claude can Read them
   let finalPrompt = prompt;
@@ -355,7 +346,6 @@ async function runAgent(
 
   try {
     await containerManager.sendMessage(group.folder, finalPrompt);
-    void isMain;
     return 'success';
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
@@ -624,7 +614,6 @@ async function main(): Promise<void> {
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
-    getSessions: () => sessions,
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) =>
       queue.registerProcess(groupJid, proc, containerName, groupFolder),

@@ -78,6 +78,8 @@ export class ContainerManager {
   private outputListeners: OutputListener[] = [];
   private turnCompleteListeners: TurnCompleteListener[] = [];
   private stopping = false;
+  /** In-flight ensureRunning calls keyed by group.folder, for concurrency-safety. */
+  private ensureInFlight = new Map<string, Promise<void>>();
 
   onOutput(listener: OutputListener): () => void {
     this.outputListeners.push(listener);
@@ -95,8 +97,22 @@ export class ContainerManager {
     };
   }
 
-  /** Idempotent: creates or adopts the container for this group. */
-  async ensureRunning(group: RegisteredGroup, chatJid: string): Promise<void> {
+  /** Idempotent: creates or adopts the container for this group.
+   *  Concurrent calls for the same group share a single in-flight promise. */
+  ensureRunning(group: RegisteredGroup, chatJid: string): Promise<void> {
+    const existing = this.ensureInFlight.get(group.folder);
+    if (existing) return existing;
+    const promise = this.doEnsureRunning(group, chatJid).finally(() => {
+      this.ensureInFlight.delete(group.folder);
+    });
+    this.ensureInFlight.set(group.folder, promise);
+    return promise;
+  }
+
+  private async doEnsureRunning(
+    group: RegisteredGroup,
+    chatJid: string,
+  ): Promise<void> {
     const existing = this.states.get(group.folder);
     if (existing) {
       if (this.isContainerRunning(existing.containerName)) return;
@@ -312,9 +328,7 @@ export class ContainerManager {
         { group: state.group.name, err },
         'Failed to inject message via tmux',
       );
-      rejectBatch(
-        err instanceof Error ? err : new Error('inject failed'),
-      );
+      rejectBatch(err instanceof Error ? err : new Error('inject failed'));
     }
   }
 
