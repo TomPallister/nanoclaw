@@ -323,41 +323,45 @@ async function runAgent(
     finalPrompt = `${attachLines}\n\n${prompt}`;
   }
 
+  // Ensure container is running (idempotent — no-op if already up)
   try {
-    // Ensure container is running (idempotent — no-op if already up)
     await containerManager.ensureRunning(group, chatJid);
+  } catch (err) {
+    logger.error({ group: group.name, err }, 'ensureRunning failed');
+    return 'error';
+  }
 
-    // Register a per-call output listener that streams chunks to the caller
-    let unsubscribe: (() => void) | null = null;
-    if (onOutput) {
-      const listener = async (
-        gf: string,
-        out: {
-          text: string;
-          toolUses: Array<{ name: string; input: unknown }>;
-          stopReason: string | null;
-        },
-      ) => {
-        if (gf !== group.folder) return;
-        if (!out.text) return; // skip tool-use-only events
-        const containerOutput: ContainerOutput = {
-          status: 'success',
-          result: out.text,
-        };
-        await onOutput(containerOutput);
+  // Register a per-call output listener that streams chunks to the caller
+  let unsubscribe: (() => void) | null = null;
+  if (onOutput) {
+    const listener = async (
+      gf: string,
+      out: {
+        text: string;
+        toolUses: Array<{ name: string; input: unknown }>;
+        stopReason: string | null;
+      },
+    ) => {
+      if (gf !== group.folder) return;
+      if (!out.text) return; // skip tool-use-only events
+      const containerOutput: ContainerOutput = {
+        status: 'success',
+        result: out.text,
       };
-      unsubscribe = containerManager.onOutput(listener);
-    }
+      await onOutput(containerOutput);
+    };
+    unsubscribe = containerManager.onOutput(listener);
+  }
 
-    // Send + wait for turn-complete
+  try {
     await containerManager.sendMessage(group.folder, finalPrompt);
-
-    if (unsubscribe) unsubscribe();
     void isMain;
     return 'success';
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
+  } finally {
+    if (unsubscribe) unsubscribe();
   }
 }
 

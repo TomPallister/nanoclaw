@@ -47,15 +47,24 @@ export type TurnCompleteListener = (
   groupFolder: string,
 ) => void | Promise<void>;
 
+interface FlushResolver {
+  resolve: () => void;
+  reject: (err: Error) => void;
+}
+
 interface ContainerState {
   group: RegisteredGroup;
   chatJid: string;
   containerName: string;
   sessionId: string;
   mergeBuffer: string[];
+  /** Promises waiting for the current (not-yet-flushed) merge batch to complete */
+  mergeBufferResolvers: FlushResolver[];
   mergeTimer: NodeJS.Timeout | null;
   turnInProgress: boolean;
   pendingFlush: boolean; // debounce fired but turn was in progress
+  /** FIFO of resolver batches, one per in-flight flush. Front = oldest pending turn. */
+  flushQueue: FlushResolver[][];
   lastActivity: number;
   ipcOutputWatcher: fs.FSWatcher | null;
   ipcTurnCompleteWatcher: fs.FSWatcher | null;
@@ -143,9 +152,11 @@ export class ContainerManager {
       containerName,
       sessionId,
       mergeBuffer: [],
+      mergeBufferResolvers: [],
       mergeTimer: null,
       turnInProgress: false,
       pendingFlush: false,
+      flushQueue: [],
       lastActivity: Date.now(),
       ipcOutputWatcher: null,
       ipcTurnCompleteWatcher: null,
@@ -163,8 +174,9 @@ export class ContainerManager {
   }
 
   /**
-   * Adds text to the merge window. Resolves when this text has been flushed
-   * AND a turn-complete signal has arrived for it.
+   * Adds text to the merge window. Resolves when the batch containing this
+   * text has been flushed to claude AND a turn-complete signal has arrived
+   * specifically for that batch (in-order via the flush queue).
    */
   sendMessage(groupFolder: string, text: string): Promise<void> {
     const state = this.states.get(groupFolder);
@@ -183,15 +195,9 @@ export class ContainerManager {
       MERGE_WINDOW_MS,
     );
 
-    // Register a one-shot promise that resolves on the next turn-complete
-    return new Promise<void>((resolve) => {
-      const listener: TurnCompleteListener = (gf) => {
-        if (gf !== groupFolder) return;
-        const idx = this.turnCompleteListeners.indexOf(listener);
-        if (idx !== -1) this.turnCompleteListeners.splice(idx, 1);
-        resolve();
-      };
-      this.turnCompleteListeners.push(listener);
+    // Promise resolved when THIS batch's turn-complete arrives (FIFO match)
+    return new Promise<void>((resolve, reject) => {
+      state.mergeBufferResolvers.push({ resolve, reject });
     });
   }
 
@@ -222,13 +228,25 @@ export class ContainerManager {
     state.mergeBuffer = [];
     state.pendingFlush = false;
 
+    // Claim the resolvers for this batch and push onto the flush queue BEFORE
+    // attempting the paste. If the paste fails we reject them and shift back.
+    const batchResolvers = state.mergeBufferResolvers;
+    state.mergeBufferResolvers = [];
+    state.flushQueue.push(batchResolvers);
+
     logger.debug(
       { group: state.group.name, chars: merged.length },
       'Flushing merge buffer to claude',
     );
 
+    const rejectBatch = (err: Error) => {
+      // Remove from queue (could be anywhere if called async, so splice by ref)
+      const idx = state.flushQueue.indexOf(batchResolvers);
+      if (idx !== -1) state.flushQueue.splice(idx, 1);
+      for (const r of batchResolvers) r.reject(err);
+    };
+
     try {
-      // Load buffer from stdin
       const loadProc = spawn(
         CONTAINER_RUNTIME_BIN,
         ['exec', '-i', state.containerName, 'tmux', 'load-buffer', '-'],
@@ -241,6 +259,7 @@ export class ContainerManager {
             { group: state.group.name, code },
             'tmux load-buffer failed',
           );
+          rejectBatch(new Error(`tmux load-buffer exit ${code}`));
           return;
         }
         try {
@@ -276,12 +295,25 @@ export class ContainerManager {
             { group: state.group.name, err },
             'tmux paste/send-keys failed',
           );
+          rejectBatch(
+            err instanceof Error ? err : new Error('paste/send-keys failed'),
+          );
         }
+      });
+      loadProc.on('error', (err) => {
+        logger.error(
+          { group: state.group.name, err },
+          'tmux load-buffer spawn error',
+        );
+        rejectBatch(err);
       });
     } catch (err) {
       logger.error(
         { group: state.group.name, err },
         'Failed to inject message via tmux',
+      );
+      rejectBatch(
+        err instanceof Error ? err : new Error('inject failed'),
       );
     }
   }
@@ -505,7 +537,13 @@ export class ContainerManager {
       state.turnInProgress = false;
       logger.debug({ group: state.group.name }, 'Turn complete');
 
-      // Fire any listeners
+      // Resolve the oldest pending flush's resolvers (FIFO match with turn)
+      const batch = state.flushQueue.shift();
+      if (batch) {
+        for (const r of batch) r.resolve();
+      }
+
+      // Fire any external turn-complete listeners
       for (const lst of [...this.turnCompleteListeners]) {
         Promise.resolve(lst(state.group.folder)).catch((err) =>
           logger.error(
@@ -547,6 +585,15 @@ export class ContainerManager {
     if (state.healthTimer) clearInterval(state.healthTimer);
     state.ipcOutputWatcher?.close();
     state.ipcTurnCompleteWatcher?.close();
+
+    // Reject any outstanding promises so callers don't hang forever.
+    const err = new Error('Container stopped before turn completed');
+    for (const r of state.mergeBufferResolvers) r.reject(err);
+    state.mergeBufferResolvers = [];
+    for (const batch of state.flushQueue) {
+      for (const r of batch) r.reject(err);
+    }
+    state.flushQueue = [];
   }
 }
 

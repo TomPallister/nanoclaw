@@ -88,8 +88,13 @@ function handleLine(line) {
     uuid: ev.uuid,
   });
 
-  if (msg.stop_reason === 'end_turn') {
+  // Turn-complete: any stop reason except tool_use. The assistant continues
+  // after tool_use once tool results come back, so that's NOT a turn boundary.
+  // end_turn, max_tokens, stop_sequence, refusal, pause_turn etc. all end the turn.
+  const stop = msg.stop_reason;
+  if (stop && stop !== 'tool_use') {
     writeJson(TURN_COMPLETE_DIR, {
+      stopReason: stop,
       timestamp: ev.timestamp,
       uuid: ev.uuid,
     });
