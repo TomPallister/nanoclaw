@@ -71,6 +71,8 @@ interface ContainerState {
   healthTimer: NodeJS.Timeout | null;
   processedOutputFiles: Set<string>;
   processedTurnCompleteFiles: Set<string>;
+  /** Serializes output listener invocations per-group so outbound messages preserve order. */
+  outputDeliveryChain: Promise<void>;
 }
 
 export class ContainerManager {
@@ -179,6 +181,7 @@ export class ContainerManager {
       healthTimer: null,
       processedOutputFiles: new Set(),
       processedTurnCompleteFiles: new Set(),
+      outputDeliveryChain: Promise.resolve(),
     };
     this.states.set(group.folder, state);
 
@@ -250,6 +253,11 @@ export class ContainerManager {
     state.mergeBufferResolvers = [];
     state.flushQueue.push(batchResolvers);
 
+    // Mark turnInProgress UPFRONT (before the async load-buffer completes) so
+    // a second debounce firing during the async window defers via pendingFlush
+    // instead of racing a parallel flush into tmux.
+    state.turnInProgress = true;
+
     logger.debug(
       { group: state.group.name, chars: merged.length },
       'Flushing merge buffer to claude',
@@ -259,6 +267,8 @@ export class ContainerManager {
       // Remove from queue (could be anywhere if called async, so splice by ref)
       const idx = state.flushQueue.indexOf(batchResolvers);
       if (idx !== -1) state.flushQueue.splice(idx, 1);
+      // Roll back turnInProgress so next sendMessage can flush normally
+      state.turnInProgress = false;
       for (const r of batchResolvers) r.reject(err);
     };
 
@@ -305,7 +315,7 @@ export class ContainerManager {
             ],
             { stdio: 'pipe' },
           );
-          state.turnInProgress = true;
+          // turnInProgress already set at flush start (see flushNow top)
         } catch (err) {
           logger.error(
             { group: state.group.name, err },
@@ -532,14 +542,29 @@ export class ContainerManager {
         timestamp: ev.timestamp ?? '',
         uuid: ev.uuid ?? '',
       };
-      for (const lst of this.outputListeners) {
-        Promise.resolve(lst(state.group.folder, output)).catch((err) =>
-          logger.error(
-            { err, group: state.group.name },
-            'Output listener threw',
-          ),
-        );
+      // Serialize output delivery per group so listeners (channel.sendMessage)
+      // preserve the order in which transcript events were written.
+      const listeners = [...this.outputListeners];
+      state.outputDeliveryChain = state.outputDeliveryChain.then(async () => {
+        for (const lst of listeners) {
+          try {
+            await lst(state.group.folder, output);
+          } catch (err) {
+            logger.error(
+              { err, group: state.group.name },
+              'Output listener threw',
+            );
+          }
+        }
+      });
+      // Delete the file — we've consumed it. The processed-set entry can be
+      // pruned too since the filename won't reappear after unlink.
+      try {
+        fs.unlinkSync(path.join(dir, name));
+      } catch {
+        /* already gone */
       }
+      state.processedOutputFiles.delete(name);
     }
   }
 
@@ -551,10 +576,14 @@ export class ContainerManager {
       state.turnInProgress = false;
       logger.debug({ group: state.group.name }, 'Turn complete');
 
-      // Resolve the oldest pending flush's resolvers (FIFO match with turn)
+      // Resolve the oldest pending flush's resolvers (FIFO match with turn).
+      // Chain the resolve onto outputDeliveryChain so sendMessage promises only
+      // resolve AFTER any assistant outputs from this turn have been delivered.
       const batch = state.flushQueue.shift();
       if (batch) {
-        for (const r of batch) r.resolve();
+        state.outputDeliveryChain = state.outputDeliveryChain.then(() => {
+          for (const r of batch) r.resolve();
+        });
       }
 
       // Fire any external turn-complete listeners
@@ -571,6 +600,14 @@ export class ContainerManager {
       if (state.pendingFlush) {
         this.flushNow(state);
       }
+
+      // Delete the processed file and prune the set entry.
+      try {
+        fs.unlinkSync(path.join(dir, name));
+      } catch {
+        /* already gone */
+      }
+      state.processedTurnCompleteFiles.delete(name);
     }
   }
 
