@@ -150,6 +150,9 @@ async function healthLoop() {
 }
 
 (async () => {
+  // Start health loop first so host can detect stuck startup states
+  // (e.g. bypass-permissions warning dialog before transcript exists).
+  healthLoop();
   const exists = await waitForFile();
   if (!exists) {
     console.error(
@@ -158,6 +161,5 @@ async function healthLoop() {
     process.exit(1);
   }
   console.error('[watcher] transcript file found, starting tail');
-  healthLoop(); // fire-and-forget
   await tailFile(TRANSCRIPT);
 })();
