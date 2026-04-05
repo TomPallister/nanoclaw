@@ -314,17 +314,26 @@ export class ContainerManager {
     // Host timezone
     args.push('-e', `TZ=${TIMEZONE}`);
 
-    // Credential proxy routing (containers never see real secrets)
-    args.push('-e', `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:9222`);
-    args.push(
-      '-e',
-      `CREDENTIAL_PROXY_URL=http://${CONTAINER_HOST_GATEWAY}:9222`,
-    );
+    // Host browser CDP endpoint (always)
     args.push('-e', `HOST_BROWSER_CDP_URL=ws://${CONTAINER_HOST_GATEWAY}:9222`);
 
-    // Placeholder auth value — proxy replaces it
-    args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
-    args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
+    // Auth: production path routes through credential proxy with placeholder.
+    // Integration tests set NANOCLAW_TEST_OAUTH_TOKEN to bypass proxy.
+    const testToken = process.env.NANOCLAW_TEST_OAUTH_TOKEN;
+    if (testToken) {
+      args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${testToken}`);
+    } else {
+      args.push(
+        '-e',
+        `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:9222`,
+      );
+      args.push(
+        '-e',
+        `CREDENTIAL_PROXY_URL=http://${CONTAINER_HOST_GATEWAY}:9222`,
+      );
+      args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+      args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
+    }
 
     // Nanoclaw-specific entrypoint config
     args.push('-e', `NANOCLAW_SESSION_ID=${sessionId}`);

@@ -70,7 +70,11 @@ export interface SchedulerDependencies {
   ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
   /** Sends text to the persistent agent container and awaits turn completion. */
-  sendToAgent: (group: RegisteredGroup, chatJid: string, text: string) => Promise<void>;
+  sendToAgent: (
+    group: RegisteredGroup,
+    chatJid: string,
+    text: string,
+  ) => Promise<void>;
 }
 
 async function runTask(

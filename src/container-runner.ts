@@ -161,6 +161,8 @@ export function buildVolumeMounts(
 
   const mergedSettings = {
     ...existingSettings,
+    // Skip the bypass-permissions warning dialog (non-interactive tmux session)
+    skipDangerousModePermissionPrompt: true,
     env: {
       ...baseEnv,
       ...(existingSettings.env || {}),

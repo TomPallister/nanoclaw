@@ -330,11 +330,14 @@ async function runAgent(
     // Register a per-call output listener that streams chunks to the caller
     let unsubscribe: (() => void) | null = null;
     if (onOutput) {
-      const listener = async (gf: string, out: {
-        text: string;
-        toolUses: Array<{ name: string; input: unknown }>;
-        stopReason: string | null;
-      }) => {
+      const listener = async (
+        gf: string,
+        out: {
+          text: string;
+          toolUses: Array<{ name: string; input: unknown }>;
+          stopReason: string | null;
+        },
+      ) => {
         if (gf !== group.folder) return;
         if (!out.text) return; // skip tool-use-only events
         const containerOutput: ContainerOutput = {

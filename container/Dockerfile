@@ -71,8 +71,9 @@ COPY transcript-watcher/ /app/transcript-watcher/
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Give node user ownership of /etc/claude-code so entrypoint can write managed-mcp.json
-RUN mkdir -p /etc/claude-code && chown node:node /etc/claude-code
+# World-writable /etc/claude-code so entrypoint can write managed-mcp.json
+# regardless of whether container runs as node (uid 1000) or host uid via --user.
+RUN mkdir -p /etc/claude-code && chmod 777 /etc/claude-code
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace && chmod 777 /home/node
