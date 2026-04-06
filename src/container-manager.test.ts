@@ -71,8 +71,7 @@ vi.mock('./db.js', () => ({
 
 const mockResolveGroupIpcPath = vi.fn();
 vi.mock('./group-folder.js', () => ({
-  resolveGroupIpcPath: (...args: unknown[]) =>
-    mockResolveGroupIpcPath(...args),
+  resolveGroupIpcPath: (...args: unknown[]) => mockResolveGroupIpcPath(...args),
 }));
 
 const mockBuildVolumeMounts = vi.fn();
@@ -218,8 +217,14 @@ describe('onOutput / onTurnComplete', () => {
     );
     outputWatchCallback('rename', 'out.json');
     await vi.advanceTimersByTimeAsync(0);
-    expect(l1).toHaveBeenCalledWith('test-group', expect.objectContaining({ text: 'hello' }));
-    expect(l2).toHaveBeenCalledWith('test-group', expect.objectContaining({ text: 'hello' }));
+    expect(l1).toHaveBeenCalledWith(
+      'test-group',
+      expect.objectContaining({ text: 'hello' }),
+    );
+    expect(l2).toHaveBeenCalledWith(
+      'test-group',
+      expect.objectContaining({ text: 'hello' }),
+    );
   });
 
   it('onTurnComplete registers and unsubscribes', async () => {
@@ -475,7 +480,9 @@ describe('flushNow', () => {
     const { proc } = createMockProc(1);
     mockSpawn.mockReturnValueOnce(proc);
 
-    const promise = mgr.sendMessage('test-group', 'hello').catch((e: Error) => e);
+    const promise = mgr
+      .sendMessage('test-group', 'hello')
+      .catch((e: Error) => e);
     await vi.advanceTimersByTimeAsync(2000);
 
     // Simulate load-buffer failure
@@ -493,7 +500,9 @@ describe('flushNow', () => {
     const { proc } = createMockProc(0);
     mockSpawn.mockReturnValueOnce(proc);
 
-    const promise = mgr.sendMessage('test-group', 'hello').catch((e: Error) => e);
+    const promise = mgr
+      .sendMessage('test-group', 'hello')
+      .catch((e: Error) => e);
     await vi.advanceTimersByTimeAsync(2000);
 
     proc._emit('error', new Error('spawn ENOENT'));
@@ -510,7 +519,9 @@ describe('flushNow', () => {
     const { proc } = createMockProc(0);
     mockSpawn.mockReturnValueOnce(proc);
 
-    const promise = mgr.sendMessage('test-group', 'hello').catch((e: Error) => e);
+    const promise = mgr
+      .sendMessage('test-group', 'hello')
+      .catch((e: Error) => e);
     await vi.advanceTimersByTimeAsync(2000);
 
     // Make paste-buffer throw
@@ -756,7 +767,9 @@ describe('Turn timeout', () => {
 
     let rejected: Error | null = null;
     const promise = mgr.sendMessage('test-group', 'hello');
-    promise.catch((e: Error) => { rejected = e; });
+    promise.catch((e: Error) => {
+      rejected = e;
+    });
 
     // Advance past debounce (2s)
     await vi.advanceTimersByTimeAsync(2001);
@@ -780,7 +793,9 @@ describe('Turn timeout', () => {
 
     let rejected: Error | null = null;
     const promise = mgr.sendMessage('test-group', 'hello');
-    promise.catch((e: Error) => { rejected = e; });
+    promise.catch((e: Error) => {
+      rejected = e;
+    });
 
     await vi.advanceTimersByTimeAsync(2001);
     proc._emit('close', 0);
@@ -1123,7 +1138,9 @@ describe('flushNow: spawn throws synchronously', () => {
 
     let rejected: Error | null = null;
     const promise = mgr.sendMessage('test-group', 'hello');
-    promise.catch((e: Error) => { rejected = e; });
+    promise.catch((e: Error) => {
+      rejected = e;
+    });
 
     await vi.advanceTimersByTimeAsync(2001);
     // Allow microtask (Promise rejection handler) to run
@@ -1179,7 +1196,7 @@ describe('healthCheck restart failure', () => {
     // Allow the async healthCheck promise to settle
     await vi.advanceTimersByTimeAsync(1);
 
-    expect((loggerMock.error as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+    expect(loggerMock.error as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
       expect.objectContaining({ group: 'Test Group' }),
       'Restart failed',
     );
@@ -1200,7 +1217,9 @@ describe('cleanupState with flushQueue items', () => {
 
     let rejected: Error | null = null;
     const promise = mgr.sendMessage('test-group', 'hello');
-    promise.catch((e: Error) => { rejected = e; });
+    promise.catch((e: Error) => {
+      rejected = e;
+    });
 
     // Advance past debounce to trigger flush
     await vi.advanceTimersByTimeAsync(2001);

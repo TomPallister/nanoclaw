@@ -263,9 +263,36 @@ export class ContainerManager {
     });
   }
 
+  /**
+   * Waits for all pending output deliveries for a group to complete.
+   * Call after sendMessage resolves to ensure late-arriving output files
+   * (fs.watch event ordering race) are fully delivered before unsubscribing
+   * output listeners.
+   */
+  async drainOutputs(groupFolder: string): Promise<void> {
+    const state = this.states.get(groupFolder);
+    if (!state) return;
+    // Wait a tick for any pending fs.watch callbacks to fire and enqueue.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    // Then wait for the delivery chain to settle.
+    await state.outputDeliveryChain;
+  }
+
   async stopAll(): Promise<void> {
     this.stopping = true;
     for (const state of this.states.values()) {
+      // Stop the container gracefully (5s timeout before SIGKILL).
+      // The credential proxy shuts down before us, so leaving containers
+      // running would cause API errors inside the container.
+      try {
+        execFileSync(
+          CONTAINER_RUNTIME_BIN,
+          ['stop', '-t', '5', state.containerName],
+          { stdio: 'pipe', timeout: 15000 },
+        );
+      } catch {
+        /* already stopped or timed out */
+      }
       this.cleanupState(state);
     }
     this.states.clear();

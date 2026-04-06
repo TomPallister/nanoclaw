@@ -346,6 +346,9 @@ async function runAgent(
 
   try {
     await containerManager.sendMessage(group.folder, finalPrompt);
+    // Drain any output files whose fs.watch events arrived after the
+    // turn-complete signal but were written before it (event coalescing).
+    await containerManager.drainOutputs(group.folder);
     return 'success';
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
@@ -429,24 +432,12 @@ async function startMessageLoop(): Promise<void> {
             allPending.length > 0 ? allPending : groupMessages;
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
-          if (queue.sendMessage(chatJid, formatted)) {
-            logger.debug(
-              { chatJid, count: messagesToSend.length },
-              'Piped messages to active container',
-            );
-            lastAgentTimestamp[chatJid] =
-              messagesToSend[messagesToSend.length - 1].timestamp;
-            saveState();
-            // Show typing indicator while the container processes the piped message
-            channel
-              .setTyping?.(chatJid, true)
-              ?.catch((err) =>
-                logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
-              );
-          } else {
-            // No active container — enqueue for a new one
-            queue.enqueueMessageCheck(chatJid);
-          }
+          // Always enqueue through the GroupQueue so messages route via
+          // ContainerManager.sendMessage (the tmux-based path). The old
+          // queue.sendMessage IPC fast-path wrote to an input/ dir that
+          // persistent containers don't read — using it would silently
+          // drop messages.
+          queue.enqueueMessageCheck(chatJid);
         }
       }
     } catch (err) {

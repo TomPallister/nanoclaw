@@ -84,8 +84,11 @@ fi
 
 echo "[entrypoint] starting claude: ${CLAUDE_CMD}" >&2
 
-# 5. Launch claude in the tmux window
-tmux send-keys -t nanoclaw:0 "${CLAUDE_CMD}" Enter
+# 5. Write the command to a script and execute it via tmux.
+# This avoids tmux send-keys character limits with very long commands.
+printf '%s\n' "$CLAUDE_CMD" > /tmp/nanoclaw-start-claude.sh
+chmod +x /tmp/nanoclaw-start-claude.sh
+tmux send-keys -t nanoclaw:0 "bash /tmp/nanoclaw-start-claude.sh" Enter
 
 # 6. Give claude time to boot its TUI (MCP servers, session restore, etc.)
 sleep 5
