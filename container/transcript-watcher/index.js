@@ -113,7 +113,18 @@ function handleLine(line) {
 }
 
 async function tailFile(filepath) {
+  // On resume, the transcript file already has the full conversation history.
+  // Start at the END of the file so we only emit events for NEW turns, not
+  // replay hundreds of old assistant messages to the user.
   let pos = 0;
+  try {
+    pos = fs.statSync(filepath).size;
+    if (pos > 0) {
+      console.error(`[watcher] resuming at byte ${pos} (skipping existing history)`);
+    }
+  } catch {
+    /* file may have just appeared — start from 0 */
+  }
   let buffer = '';
   // StringDecoder handles UTF-8 sequences that span read boundaries correctly.
   const decoder = new StringDecoder('utf8');

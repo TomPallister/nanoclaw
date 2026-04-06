@@ -218,29 +218,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     chatJid,
     imageAttachments,
     async (result) => {
-      // Streaming output callback — called for each agent result
+      // Track whether output was sent — used for cursor rollback on error.
+      // Actual channel delivery is handled by the global output listener
+      // registered in main() so both user messages and scheduled tasks
+      // get their output routed.
       if (result.result) {
         const raw =
           typeof result.result === 'string'
             ? result.result
             : JSON.stringify(result.result);
-        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text) {
-          await channel.sendMessage(chatJid, text);
           outputSentToUser = true;
         }
-        // Only reset idle timer on actual results, not session-update markers (result: null)
         resetIdleTimer();
-      }
-
-      if (result.status === 'success') {
-        queue.notifyIdle(chatJid);
-      }
-
-      if (result.status === 'error') {
-        hadError = true;
       }
     },
   );
@@ -601,6 +592,26 @@ async function main(): Promise<void> {
   if (TELEGRAM_BOT_POOL.length > 0) {
     await initBotPool(TELEGRAM_BOT_POOL);
   }
+
+  // Global output listener: routes ALL assistant text from any container to the
+  // correct channel. Handles both user-message and scheduled-task output.
+  // Per-call listeners in runAgent are only for tracking outputSentToUser.
+  containerManager.onOutput(async (groupFolder, output) => {
+    if (!output.text) return;
+    const entry = Object.entries(registeredGroups).find(
+      ([, g]) => g.folder === groupFolder,
+    );
+    if (!entry) return;
+    const [chatJid] = entry;
+    const channel = findChannel(channels, chatJid);
+    if (!channel) return;
+    const raw = output.text;
+    const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+    if (text) {
+      const formatted = formatOutbound(text);
+      if (formatted) await channel.sendMessage(chatJid, formatted);
+    }
+  });
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
