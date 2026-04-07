@@ -61,9 +61,10 @@ fi
 tmux new-session -d -s nanoclaw -x 220 -y 50
 
 # 4. Build claude command
-CLAUDE_CMD="claude --dangerously-skip-permissions --session-id ${NANOCLAW_SESSION_ID}"
 if [ "${NANOCLAW_RESUME:-0}" = "1" ]; then
-  CLAUDE_CMD="${CLAUDE_CMD} --resume ${NANOCLAW_SESSION_ID}"
+  CLAUDE_CMD="claude --dangerously-skip-permissions --resume ${NANOCLAW_SESSION_ID}"
+else
+  CLAUDE_CMD="claude --dangerously-skip-permissions --session-id ${NANOCLAW_SESSION_ID}"
 fi
 if [ -n "${NANOCLAW_ALLOWED_TOOLS:-}" ]; then
   CLAUDE_CMD="${CLAUDE_CMD} --allowed-tools \"${NANOCLAW_ALLOWED_TOOLS}\""

@@ -189,7 +189,8 @@ def wait_for_tmux(runtime: str, container: str, timeout: int = 60) -> None:
     """Poll until claude's TUI is ready inside the tmux session.
 
     Checks for the tmux session first, then captures the pane and looks for
-    the '>' prompt or the word 'claude' which indicates the TUI has booted.
+    claude's input prompt character (unicode ❯) which appears when the TUI
+    has fully booted and is ready to accept input.
     """
     import time
     deadline = time.time() + timeout
@@ -207,18 +208,24 @@ def wait_for_tmux(runtime: str, container: str, timeout: int = 60) -> None:
                 time.sleep(1)
                 continue
 
-        # Capture pane content and look for claude's input prompt
+        # Capture pane content and look for claude's input prompt.
+        # The TUI displays ❯ (U+276F, HEAVY RIGHT-POINTING ANGLE
+        # QUOTATION MARK) when ready for input. This is distinct from
+        # the bash $ prompt and other shell characters.
         pane = subprocess.run(
             [runtime, "exec", container, "tmux", "capture-pane", "-p", "-t", "nanoclaw:0"],
             capture_output=True, text=True,
         )
         if pane.returncode == 0:
-            content = pane.stdout.lower()
-            # Claude's TUI shows a '>' prompt or project path when ready
-            if ">" in content or "/workspace" in content:
+            content = pane.stdout
+            if "\u276f" in content:
+                # Wait a moment for the TUI to fully stabilize after
+                # rendering the prompt character.
+                time.sleep(2)
                 dbg("claude TUI is ready")
                 return
-            dbg(f"waiting for claude TUI (pane: {pane.stdout.strip()[:80]})")
+            snippet = content.strip().replace("\n", " ")[:100]
+            dbg(f"waiting for claude TUI (pane: {snippet})")
 
         time.sleep(2)
     sys.exit(f"error: claude TUI did not become ready within {timeout}s")
