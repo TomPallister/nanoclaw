@@ -233,12 +233,16 @@ export class ContainerManager {
 
     // Promise resolved when THIS batch's turn-complete arrives (FIFO match).
     // Wrap resolve/reject with a turn-timeout so a hung claude can't block
-    // the caller indefinitely. Settling the promise clears the timer.
+    // the caller indefinitely. On timeout, we also clean up the state machine
+    // (turnInProgress, flushQueue) so future messages aren't permanently stuck.
     return new Promise<void>((resolve, reject) => {
       let settled = false;
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        // Clean up the state machine — find and remove the batch containing
+        // this resolver, reset turnInProgress, and flush any pending messages.
+        this.handleTurnTimeout(state, resolver);
         reject(
           new Error(
             `Turn timeout after ${TURN_TIMEOUT_MS}ms waiting for claude response`,
@@ -299,6 +303,43 @@ export class ContainerManager {
   }
 
   // --- private helpers ---
+
+  /**
+   * Called when a resolver's turn-timeout fires. Cleans up the state machine
+   * so future messages aren't permanently stuck behind a dead turn.
+   */
+  private handleTurnTimeout(
+    state: ContainerState,
+    timedOutResolver: FlushResolver,
+  ): void {
+    // Find the batch that contains this resolver
+    const batchIdx = state.flushQueue.findIndex((batch) =>
+      batch.includes(timedOutResolver),
+    );
+    if (batchIdx !== -1) {
+      const [batch] = state.flushQueue.splice(batchIdx, 1);
+      // Reject all OTHER resolvers in the same batch (they share the same turn)
+      const timeoutErr = new Error('Turn timeout (co-batched resolver)');
+      for (const r of batch) {
+        if (r !== timedOutResolver) r.reject(timeoutErr);
+      }
+    }
+    // Also check mergeBufferResolvers (batch not yet flushed)
+    const bufIdx = state.mergeBufferResolvers.indexOf(timedOutResolver);
+    if (bufIdx !== -1) {
+      state.mergeBufferResolvers.splice(bufIdx, 1);
+    }
+
+    // Reset turnInProgress if no more batches are in flight
+    if (state.flushQueue.length === 0) {
+      state.turnInProgress = false;
+    }
+
+    // If messages accumulated during the stuck turn, flush them now
+    if (state.pendingFlush && !state.turnInProgress) {
+      this.flushNow(state);
+    }
+  }
 
   private onDebounceFired(state: ContainerState): void {
     state.mergeTimer = null;

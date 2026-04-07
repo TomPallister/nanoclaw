@@ -136,14 +136,7 @@ export function cleanupOrphans(): void {
     // -a includes exited containers, not just running ones
     const output = execFileSync(
       CONTAINER_RUNTIME_BIN,
-      [
-        'ps',
-        '-a',
-        '--filter',
-        'name=nanoclaw-',
-        '--format',
-        '{{.Names}}',
-      ],
+      ['ps', '-a', '--filter', 'name=nanoclaw-', '--format', '{{.Names}}'],
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     const orphans = output.trim().split('\n').filter(Boolean);
