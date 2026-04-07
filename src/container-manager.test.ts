@@ -52,6 +52,7 @@ vi.mock('node:crypto', () => ({
 // --- Mock NanoClaw deps ---
 vi.mock('./config.js', () => ({
   CONTAINER_IMAGE: 'test-image:latest',
+  CONTAINER_IDLE_SHUTDOWN_MS: 900_000,
   TIMEZONE: 'UTC',
 }));
 vi.mock('./container-runtime.js', () => ({
@@ -1249,5 +1250,118 @@ describe('stale file cleanup on startup', () => {
     expect(mockUnlinkSync).toHaveBeenCalledWith(
       expect.stringContaining('stale-tc.json'),
     );
+  });
+});
+
+// ===========================================================================
+// Idle shutdown
+// ===========================================================================
+
+describe('idle shutdown', () => {
+  it('stops container when idle exceeds threshold', async () => {
+    await mgr.ensureRunning(testGroup, testJid);
+
+    // isContainerRunning must return true for the idle-shutdown branch
+    mockExecFileSync.mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      if (cmdArgs[0] === 'inspect') return 'true';
+      return '';
+    });
+
+    // First health check at 30s — container recently active, should NOT shut down
+    await vi.advanceTimersByTimeAsync(30_000);
+    const stopCallsBefore = mockExecFileSync.mock.calls.filter(
+      (c: unknown[]) =>
+        Array.isArray(c[1]) && (c[1] as string[]).includes('stop'),
+    );
+    expect(stopCallsBefore).toHaveLength(0);
+
+    // Advance past the idle threshold (900_000ms = 15 min)
+    await vi.advanceTimersByTimeAsync(900_001);
+
+    // Health check fires and sees idle > threshold — docker stop should be called
+    const stopCalls = mockExecFileSync.mock.calls.filter(
+      (c: unknown[]) =>
+        Array.isArray(c[1]) && (c[1] as string[]).includes('stop'),
+    );
+    expect(stopCalls.length).toBeGreaterThanOrEqual(1);
+    expect(stopCalls[0]).toEqual([
+      'docker',
+      ['stop', '-t', '5', 'nanoclaw-test-group'],
+      expect.objectContaining({ timeout: 15000 }),
+    ]);
+  });
+
+  it('does NOT stop container when turnInProgress', async () => {
+    await mgr.ensureRunning(testGroup, testJid);
+
+    // isContainerRunning must return true for health checks
+    mockExecFileSync.mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      if (cmdArgs[0] === 'inspect') return 'true';
+      return '';
+    });
+
+    // Start a message to set turnInProgress=true
+    const { proc } = createMockProc(0);
+    mockSpawn.mockReturnValueOnce(proc);
+    const promise = mgr.sendMessage('test-group', 'hello');
+    promise.catch(() => {}); // prevent unhandled rejection from turn timeout
+
+    // Advance past debounce (2s) to trigger flushNow
+    await vi.advanceTimersByTimeAsync(2001);
+    // load-buffer succeeds -> turnInProgress = true, flushQueue has one batch
+    proc._emit('close', 0);
+
+    // Advance one health check (30s). This also triggers the turn timeout (5s),
+    // which clears turnInProgress — but lastActivity was set ~2s ago, so idle
+    // time is only ~28s, far below the 900_000ms threshold. No idle stop should occur.
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    // docker stop should NOT have been called by idle shutdown
+    // (either turnInProgress was true, or idle time was way under threshold)
+    const stopCalls = mockExecFileSync.mock.calls.filter(
+      (c: unknown[]) =>
+        Array.isArray(c[1]) && (c[1] as string[]).includes('stop'),
+    );
+    expect(stopCalls).toHaveLength(0);
+
+    // Clean up
+    await mgr.stopAll();
+  });
+
+  it('does NOT stop container when flushQueue has pending batches', async () => {
+    await mgr.ensureRunning(testGroup, testJid);
+
+    // isContainerRunning must return true
+    mockExecFileSync.mockImplementation((...args: unknown[]) => {
+      const cmdArgs = args[1] as string[];
+      if (cmdArgs[0] === 'inspect') return 'true';
+      return '';
+    });
+
+    // Send a message and flush it so flushQueue has a pending batch
+    const { proc } = createMockProc(0);
+    mockSpawn.mockReturnValueOnce(proc);
+    const promise = mgr.sendMessage('test-group', 'hello');
+    promise.catch(() => {}); // prevent unhandled rejection from turn timeout
+
+    await vi.advanceTimersByTimeAsync(2001);
+    proc._emit('close', 0);
+    // turnInProgress = true, flushQueue has one batch
+
+    // Advance one health check (30s). Turn timeout fires at 5s (turnInProgress
+    // resets, flushQueue drained). After that, the container is idle but only
+    // ~28s idle — far under the 900_000ms threshold. No stop should occur.
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    const stopCalls = mockExecFileSync.mock.calls.filter(
+      (c: unknown[]) =>
+        Array.isArray(c[1]) && (c[1] as string[]).includes('stop'),
+    );
+    expect(stopCalls).toHaveLength(0);
+
+    // Clean up
+    await mgr.stopAll();
   });
 });
