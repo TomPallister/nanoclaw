@@ -383,39 +383,56 @@ def main():
         print("warning: no secrets found in .env — agent may not be authenticated", file=sys.stderr)
 
     current_prompt = prompt
-    current_session = args.session
+    current_session = args.session or str(__import__("uuid").uuid4())
+    resume = args.session is not None
+    container_name = f"claw-{int(__import__('time').time())}"
 
-    while True:
-        payload: dict = {
-            "prompt": current_prompt,
-            "chatJid": jid,
-            "isMain": is_main,
-        }
-        if group_folder:
-            payload["groupFolder"] = group_folder
-        if current_session:
-            payload["sessionId"] = current_session
-            payload["resumeAt"] = "latest"
+    if not resume:
+        print(f"[{group_name or jid}] running via {runtime}...", file=sys.stderr)
 
-        if not current_session:
-            print(f"[{group_name or jid}] running via {runtime}...", file=sys.stderr)
+    try:
+        # Start container (or reuse in interactive mode)
+        container_name = run_container(
+            runtime, args.image, current_session, resume,
+            secrets, group_folder or "default", container_name,
+        )
 
-        session_id = run_container(runtime, args.image, payload, secrets, group_folder or "default", timeout=args.timeout)
+        # Wait for claude to boot and transcript to appear
+        wait_for_transcript(runtime, container_name, current_session)
 
-        # Interactive mode: prompt for next input
-        if args.interactive and session_id:
-            try:
-                print("\n> ", end="", file=sys.stderr, flush=True)
-                next_prompt = input()
-                if not next_prompt.strip():
+        while True:
+            # Get current transcript size (seek point)
+            start_pos = get_transcript_size(runtime, container_name, current_session)
+
+            # Inject prompt
+            send_prompt(runtime, container_name, current_prompt)
+
+            # Tail transcript for response
+            response = tail_response(
+                runtime, container_name, current_session,
+                start_pos, timeout=args.timeout,
+            )
+
+            print(response)
+            print(f"\n[session: {current_session}]", file=sys.stderr)
+
+            # Interactive mode: prompt for next input, reuse same container
+            if args.interactive:
+                try:
+                    print("\n> ", end="", file=sys.stderr, flush=True)
+                    next_prompt = input()
+                    if not next_prompt.strip():
+                        break
+                    current_prompt = next_prompt
+                    resume = True
+                except (EOFError, KeyboardInterrupt):
+                    print("\n[exiting]", file=sys.stderr)
                     break
-                current_prompt = next_prompt
-                current_session = session_id
-            except (EOFError, KeyboardInterrupt):
-                print("\n[exiting]", file=sys.stderr)
+            else:
                 break
-        else:
-            break
+
+    finally:
+        stop_container(runtime, container_name)
 
 
 if __name__ == "__main__":
