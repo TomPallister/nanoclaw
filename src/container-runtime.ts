@@ -128,27 +128,39 @@ export function ensureContainerRuntimeRunning(): void {
   }
 }
 
-/** Kill orphaned NanoClaw containers from previous runs. */
+/** Kill and remove orphaned NanoClaw containers from previous runs.
+ *  Finds both running AND exited containers (docker ps -a) to prevent
+ *  dead containers from accumulating across restarts. */
 export function cleanupOrphans(): void {
   try {
+    // -a includes exited containers, not just running ones
     const output = execFileSync(
       CONTAINER_RUNTIME_BIN,
-      ['ps', '--filter', 'name=nanoclaw-', '--format', '{{.Names}}'],
+      [
+        'ps',
+        '-a',
+        '--filter',
+        'name=nanoclaw-',
+        '--format',
+        '{{.Names}}',
+      ],
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     const orphans = output.trim().split('\n').filter(Boolean);
     for (const name of orphans) {
       try {
-        const { bin, args } = stopContainer(name);
-        execFileSync(bin, args, { stdio: 'pipe' });
+        // rm -f handles both running (force-kills) and exited containers
+        execFileSync(CONTAINER_RUNTIME_BIN, ['rm', '-f', name], {
+          stdio: 'pipe',
+        });
       } catch {
-        /* already stopped */
+        /* already removed */
       }
     }
     if (orphans.length > 0) {
       logger.info(
         { count: orphans.length, names: orphans },
-        'Stopped orphaned containers',
+        'Removed orphaned containers',
       );
     }
   } catch (err) {

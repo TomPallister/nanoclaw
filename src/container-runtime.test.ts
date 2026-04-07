@@ -86,39 +86,39 @@ describe('ensureContainerRuntimeRunning', () => {
 // --- cleanupOrphans ---
 
 describe('cleanupOrphans', () => {
-  it('stops orphaned nanoclaw containers', () => {
-    // docker ps returns container names, one per line
+  it('removes orphaned nanoclaw containers (running and exited)', () => {
+    // docker ps -a returns container names, one per line
     mockExecFileSync.mockReturnValueOnce(
       'nanoclaw-group1-111\nnanoclaw-group2-222\n',
     );
-    // stop calls succeed
+    // rm calls succeed
     mockExecFileSync.mockReturnValue('');
 
     cleanupOrphans();
 
-    // ps + 2 stop calls
+    // ps -a + 2 rm calls
     expect(mockExecFileSync).toHaveBeenCalledTimes(3);
     expect(mockExecFileSync).toHaveBeenNthCalledWith(
       1,
       CONTAINER_RUNTIME_BIN,
-      ['ps', '--filter', 'name=nanoclaw-', '--format', '{{.Names}}'],
+      ['ps', '-a', '--filter', 'name=nanoclaw-', '--format', '{{.Names}}'],
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     expect(mockExecFileSync).toHaveBeenNthCalledWith(
       2,
       CONTAINER_RUNTIME_BIN,
-      ['stop', '-t', '1', 'nanoclaw-group1-111'],
+      ['rm', '-f', 'nanoclaw-group1-111'],
       { stdio: 'pipe' },
     );
     expect(mockExecFileSync).toHaveBeenNthCalledWith(
       3,
       CONTAINER_RUNTIME_BIN,
-      ['stop', '-t', '1', 'nanoclaw-group2-222'],
+      ['rm', '-f', 'nanoclaw-group2-222'],
       { stdio: 'pipe' },
     );
     expect(logger.info).toHaveBeenCalledWith(
       { count: 2, names: ['nanoclaw-group1-111', 'nanoclaw-group2-222'] },
-      'Stopped orphaned containers',
+      'Removed orphaned containers',
     );
   });
 
@@ -144,13 +144,13 @@ describe('cleanupOrphans', () => {
     );
   });
 
-  it('continues stopping remaining containers when one stop fails', () => {
+  it('continues removing remaining containers when one rm fails', () => {
     mockExecFileSync.mockReturnValueOnce('nanoclaw-a-1\nnanoclaw-b-2\n');
-    // First stop fails
+    // First rm fails
     mockExecFileSync.mockImplementationOnce(() => {
-      throw new Error('already stopped');
+      throw new Error('already removed');
     });
-    // Second stop succeeds
+    // Second rm succeeds
     mockExecFileSync.mockReturnValueOnce('');
 
     cleanupOrphans(); // should not throw
@@ -158,7 +158,7 @@ describe('cleanupOrphans', () => {
     expect(mockExecFileSync).toHaveBeenCalledTimes(3);
     expect(logger.info).toHaveBeenCalledWith(
       { count: 2, names: ['nanoclaw-a-1', 'nanoclaw-b-2'] },
-      'Stopped orphaned containers',
+      'Removed orphaned containers',
     );
   });
 });

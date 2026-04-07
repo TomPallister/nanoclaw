@@ -4,7 +4,6 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
-  IDLE_TIMEOUT,
   POLL_INTERVAL,
   TELEGRAM_BOT_POOL,
   TIMEZONE,
@@ -194,22 +193,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     'Processing messages',
   );
 
-  // Track idle timer for closing stdin when agent is idle
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const resetIdleTimer = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      logger.debug(
-        { group: group.name },
-        'Idle timeout, closing container stdin',
-      );
-      queue.closeStdin(chatJid);
-    }, IDLE_TIMEOUT);
-  };
-
   await channel.setTyping?.(chatJid, true);
-  let hadError = false;
   let outputSentToUser = false;
 
   const output = await runAgent(
@@ -231,15 +215,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         if (text) {
           outputSentToUser = true;
         }
-        resetIdleTimer();
       }
     },
   );
 
   await channel.setTyping?.(chatJid, false);
-  if (idleTimer) clearTimeout(idleTimer);
 
-  if (output === 'error' || hadError) {
+  if (output === 'error') {
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
@@ -412,22 +394,8 @@ async function startMessageLoop(): Promise<void> {
             if (!hasTrigger) continue;
           }
 
-          // Pull all messages since lastAgentTimestamp so non-trigger
-          // context that accumulated between triggers is included.
-          const allPending = getMessagesSince(
-            chatJid,
-            lastAgentTimestamp[chatJid] || '',
-            ASSISTANT_NAME,
-          );
-          const messagesToSend =
-            allPending.length > 0 ? allPending : groupMessages;
-          const formatted = formatMessages(messagesToSend, TIMEZONE);
-
-          // Always enqueue through the GroupQueue so messages route via
-          // ContainerManager.sendMessage (the tmux-based path). The old
-          // queue.sendMessage IPC fast-path wrote to an input/ dir that
-          // persistent containers don't read — using it would silently
-          // drop messages.
+          // Enqueue through the GroupQueue — processGroupMessages will
+          // independently fetch and format the messages via lastAgentTimestamp.
           queue.enqueueMessageCheck(chatJid);
         }
       }
@@ -605,12 +573,9 @@ async function main(): Promise<void> {
     const [chatJid] = entry;
     const channel = findChannel(channels, chatJid);
     if (!channel) return;
-    const raw = output.text;
-    const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-    if (text) {
-      const formatted = formatOutbound(text);
-      if (formatted) await channel.sendMessage(chatJid, formatted);
-    }
+    // formatOutbound strips <internal> tags and trims
+    const text = formatOutbound(output.text);
+    if (text) await channel.sendMessage(chatJid, text);
   });
 
   // Start subsystems (independently of connection handler)

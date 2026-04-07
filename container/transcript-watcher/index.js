@@ -152,8 +152,14 @@ async function tailFile(filepath) {
           }
         }
       } else if (stat.size < pos) {
-        // File rotated/truncated — restart from beginning
-        pos = 0;
+        // File shrunk (compaction, rotation, manual edit). Skip to end —
+        // we can't reliably identify which events are new vs rewritten,
+        // and re-emitting old events would spam the user with duplicates
+        // and misalign the flush queue.
+        console.error(
+          `[watcher] file shrunk (${pos} -> ${stat.size}), seeking to end`,
+        );
+        pos = stat.size;
         buffer = '';
       }
     } catch (err) {
