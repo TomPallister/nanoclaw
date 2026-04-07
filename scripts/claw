@@ -185,7 +185,46 @@ def stop_container(runtime: str, name: str) -> None:
 TRANSCRIPT_PATH_IN_CONTAINER = "/home/node/.claude/projects/-workspace-group"
 
 
-def wait_for_transcript(runtime: str, container: str, session_id: str, timeout: int = 60) -> None:
+def wait_for_tmux(runtime: str, container: str, timeout: int = 60) -> None:
+    """Poll until claude's TUI is ready inside the tmux session.
+
+    Checks for the tmux session first, then captures the pane and looks for
+    the '>' prompt or the word 'claude' which indicates the TUI has booted.
+    """
+    import time
+    deadline = time.time() + timeout
+    tmux_found = False
+    while time.time() < deadline:
+        if not tmux_found:
+            result = subprocess.run(
+                [runtime, "exec", container, "tmux", "list-sessions"],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0 and "nanoclaw" in result.stdout:
+                dbg("tmux session exists")
+                tmux_found = True
+            else:
+                time.sleep(1)
+                continue
+
+        # Capture pane content and look for claude's input prompt
+        pane = subprocess.run(
+            [runtime, "exec", container, "tmux", "capture-pane", "-p", "-t", "nanoclaw:0"],
+            capture_output=True, text=True,
+        )
+        if pane.returncode == 0:
+            content = pane.stdout.lower()
+            # Claude's TUI shows a '>' prompt or project path when ready
+            if ">" in content or "/workspace" in content:
+                dbg("claude TUI is ready")
+                return
+            dbg(f"waiting for claude TUI (pane: {pane.stdout.strip()[:80]})")
+
+        time.sleep(2)
+    sys.exit(f"error: claude TUI did not become ready within {timeout}s")
+
+
+def wait_for_transcript(runtime: str, container: str, session_id: str, timeout: int = 120) -> None:
     """Poll until the transcript JSONL file exists inside the container."""
     import time
     path = f"{TRANSCRIPT_PATH_IN_CONTAINER}/{session_id}.jsonl"
@@ -390,6 +429,8 @@ def main():
     if not resume:
         print(f"[{group_name or jid}] running via {runtime}...", file=sys.stderr)
 
+    first_turn = True
+
     try:
         # Start container (or reuse in interactive mode)
         container_name = run_container(
@@ -397,15 +438,27 @@ def main():
             secrets, group_folder or "default", container_name,
         )
 
-        # Wait for claude to boot and transcript to appear
-        wait_for_transcript(runtime, container_name, current_session)
+        # Wait for tmux to be ready before sending anything
+        wait_for_tmux(runtime, container_name)
+
+        # On resume the transcript already exists — wait for it now so we
+        # can seek past existing history before injecting the prompt.
+        if resume:
+            wait_for_transcript(runtime, container_name, current_session)
 
         while True:
-            # Get current transcript size (seek point)
+            # Get current transcript size (seek point) — on first fresh
+            # turn the file doesn't exist yet so start_pos is 0.
             start_pos = get_transcript_size(runtime, container_name, current_session)
 
-            # Inject prompt
+            # Inject prompt via tmux
             send_prompt(runtime, container_name, current_prompt)
+
+            # On the first fresh turn, the transcript file is created by
+            # claude only after it starts processing the prompt.
+            if first_turn and not resume:
+                wait_for_transcript(runtime, container_name, current_session)
+                first_turn = False
 
             # Tail transcript for response
             response = tail_response(
@@ -424,7 +477,6 @@ def main():
                     if not next_prompt.strip():
                         break
                     current_prompt = next_prompt
-                    resume = True
                 except (EOFError, KeyboardInterrupt):
                     print("\n[exiting]", file=sys.stderr)
                     break
