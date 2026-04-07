@@ -16,7 +16,11 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { CONTAINER_IMAGE, TIMEZONE } from './config.js';
+import {
+  CONTAINER_IMAGE,
+  CONTAINER_IDLE_SHUTDOWN_MS,
+  TIMEZONE,
+} from './config.js';
 import {
   CONTAINER_HOST_GATEWAY,
   CONTAINER_RUNTIME_BIN,
@@ -788,6 +792,33 @@ export class ContainerManager {
       } catch (err) {
         logger.error({ group: group.name, err }, 'Restart failed');
       }
+      return;
+    }
+
+    // Idle shutdown: stop the container if no activity for CONTAINER_IDLE_SHUTDOWN_MS.
+    // Only when: idle shutdown enabled, no turn in progress, no buffered/queued work.
+    if (
+      CONTAINER_IDLE_SHUTDOWN_MS > 0 &&
+      !state.turnInProgress &&
+      state.mergeBuffer.length === 0 &&
+      state.flushQueue.length === 0 &&
+      Date.now() - state.lastActivity > CONTAINER_IDLE_SHUTDOWN_MS
+    ) {
+      logger.info(
+        { group: state.group.name, idleMs: Date.now() - state.lastActivity },
+        'Idle shutdown: stopping container',
+      );
+      try {
+        execFileSync(
+          CONTAINER_RUNTIME_BIN,
+          ['stop', '-t', '5', state.containerName],
+          { stdio: 'pipe', timeout: 15000 },
+        );
+      } catch {
+        /* already stopped */
+      }
+      this.cleanupState(state);
+      this.states.delete(state.group.folder);
     }
   }
 
