@@ -564,8 +564,29 @@ async function main(): Promise<void> {
   // Global output listener: routes ALL assistant text from any container to the
   // correct channel. Handles both user-message and scheduled-task output.
   // Per-call listeners in runAgent are only for tracking outputSentToUser.
+  //
+  // When Claude uses mcp__nanoclaw__send_message, the message reaches the user
+  // via the IPC watcher. The subsequent end_turn event contains only Claude's
+  // internal summary (e.g. "Confirmed to Tom…") which should NOT be forwarded,
+  // as it would duplicate the already-delivered MCP message.
+  const mcpSendUsedInTurn = new Set<string>(); // groupFolder
   containerManager.onOutput(async (groupFolder, output) => {
+    // Track whether the MCP send tool was used in this turn
+    if (
+      output.toolUses.some((t) => t.name === 'mcp__nanoclaw__send_message')
+    ) {
+      mcpSendUsedInTurn.add(groupFolder);
+    }
+
     if (!output.text) return;
+
+    // If this is the end of a turn where MCP send was used, suppress the
+    // summary text — the real message was already delivered via IPC.
+    if (output.stopReason === 'end_turn' && mcpSendUsedInTurn.has(groupFolder)) {
+      mcpSendUsedInTurn.delete(groupFolder);
+      return;
+    }
+
     const entry = Object.entries(registeredGroups).find(
       ([, g]) => g.folder === groupFolder,
     );
@@ -576,6 +597,10 @@ async function main(): Promise<void> {
     // formatOutbound strips <internal> tags and trims
     const text = formatOutbound(output.text);
     if (text) await channel.sendMessage(chatJid, text);
+  });
+  // Clear the flag on turn-complete so it doesn't leak across turns
+  containerManager.onTurnComplete((groupFolder) => {
+    mcpSendUsedInTurn.delete(groupFolder);
   });
 
   // Start subsystems (independently of connection handler)

@@ -178,7 +178,11 @@ export function buildVolumeMounts(
 
   // Sync host OAuth credentials into the per-group .claude/ so the container's
   // claude CLI authenticates directly (bypasses credential proxy for auth).
-  const hostCredentials = path.join(os.homedir(), '.claude', '.credentials.json');
+  const hostCredentials = path.join(
+    os.homedir(),
+    '.claude',
+    '.credentials.json',
+  );
   if (fs.existsSync(hostCredentials)) {
     fs.copyFileSync(
       hostCredentials,

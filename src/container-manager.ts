@@ -409,6 +409,11 @@ export class ContainerManager {
           return;
         }
         try {
+          // Non-bracketed paste (no -p): tmux sends the buffer content as
+          // literal keypresses. Claude's TUI treats newlines as line breaks in
+          // the input field, then a single Enter submits the whole prompt.
+          // Bracketed paste (-p) does NOT work — claude's TUI buffers it
+          // as "[Pasted text]" and never auto-submits on Enter.
           execFileSync(
             CONTAINER_RUNTIME_BIN,
             [
