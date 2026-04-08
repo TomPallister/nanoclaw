@@ -176,6 +176,16 @@ export function buildVolumeMounts(
     JSON.stringify(mergedSettings, null, 2) + '\n',
   );
 
+  // Sync host OAuth credentials into the per-group .claude/ so the container's
+  // claude CLI authenticates directly (bypasses credential proxy for auth).
+  const hostCredentials = path.join(os.homedir(), '.claude', '.credentials.json');
+  if (fs.existsSync(hostCredentials)) {
+    fs.copyFileSync(
+      hostCredentials,
+      path.join(groupSessionsDir, '.credentials.json'),
+    );
+  }
+
   // Sync skills from container/skills/ into each group's .claude/skills/
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');

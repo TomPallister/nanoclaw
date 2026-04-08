@@ -19,6 +19,7 @@ import path from 'node:path';
 import {
   CONTAINER_IMAGE,
   CONTAINER_IDLE_SHUTDOWN_MS,
+  CREDENTIAL_PROXY_PORT,
   TIMEZONE,
 } from './config.js';
 import {
@@ -178,6 +179,10 @@ export class ContainerManager {
       'Starting persistent container',
     );
     execFileSync(CONTAINER_RUNTIME_BIN, args, { stdio: 'pipe' });
+
+    // Wait for claude TUI to be ready before allowing sendMessage calls.
+    // The TUI renders a ❯ (U+276F) prompt when ready to accept input.
+    await this.waitForTuiReady(containerName, group.name);
 
     // Persist session id only AFTER successful container start so a failed
     // run doesn't leave a dangling session id in the DB.
@@ -411,7 +416,6 @@ export class ContainerManager {
               state.containerName,
               'tmux',
               'paste-buffer',
-              '-p',
               '-t',
               'nanoclaw:0',
             ],
@@ -486,6 +490,48 @@ export class ContainerManager {
     }
   }
 
+  /** Poll the tmux pane until the claude TUI prompt (❯) appears. */
+  private async waitForTuiReady(
+    containerName: string,
+    groupName: string,
+    timeoutMs = 120_000,
+  ): Promise<void> {
+    const start = Date.now();
+    const pollMs = 2000;
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const pane = execFileSync(
+          CONTAINER_RUNTIME_BIN,
+          [
+            'exec',
+            containerName,
+            'tmux',
+            'capture-pane',
+            '-p',
+            '-t',
+            'nanoclaw:0',
+          ],
+          { stdio: 'pipe', encoding: 'utf-8', timeout: 10_000 },
+        );
+        // ❯ is U+276F — the claude TUI prompt character
+        if (pane.includes('❯')) {
+          logger.info(
+            { group: groupName, waitMs: Date.now() - start },
+            'Claude TUI ready',
+          );
+          return;
+        }
+      } catch {
+        // Container or tmux not ready yet — keep polling
+      }
+      await new Promise<void>((r) => setTimeout(r, pollMs));
+    }
+    logger.warn(
+      { group: groupName, timeoutMs },
+      'Timed out waiting for claude TUI readiness',
+    );
+  }
+
   private isContainerRunning(name: string): boolean {
     try {
       const out = execFileSync(
@@ -519,23 +565,18 @@ export class ContainerManager {
     // Host browser CDP endpoint (always)
     args.push('-e', `HOST_BROWSER_CDP_URL=ws://${CONTAINER_HOST_GATEWAY}:9222`);
 
-    // Auth: production path routes through credential proxy with placeholder.
-    // Integration tests set NANOCLAW_TEST_OAUTH_TOKEN to bypass proxy.
+    // Auth: Claude CLI uses the host's OAuth credentials copied into the
+    // per-group .claude/.credentials.json (see container-runner.ts).
+    // The credential proxy is still used for GitHub tokens and other services.
+    // Integration tests can override with a direct token.
     const testToken = process.env.NANOCLAW_TEST_OAUTH_TOKEN;
     if (testToken) {
       args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${testToken}`);
-    } else {
-      args.push(
-        '-e',
-        `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:9222`,
-      );
-      args.push(
-        '-e',
-        `CREDENTIAL_PROXY_URL=http://${CONTAINER_HOST_GATEWAY}:9222`,
-      );
-      args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
-      args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
     }
+    args.push(
+      '-e',
+      `CREDENTIAL_PROXY_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+    );
 
     // Nanoclaw-specific entrypoint config
     args.push('-e', `NANOCLAW_SESSION_ID=${sessionId}`);
