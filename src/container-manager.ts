@@ -528,6 +528,8 @@ export class ContainerManager {
             { group: groupName, waitMs: Date.now() - start },
             'Claude TUI ready',
           );
+          // Log MCP server status from the TUI status bar
+          this.logMcpStatus(pane, groupName);
           return;
         }
       } catch {
@@ -539,6 +541,19 @@ export class ContainerManager {
       { group: groupName, timeoutMs },
       'Timed out waiting for claude TUI readiness',
     );
+  }
+
+  /** Extract and log MCP server status from the TUI pane content. */
+  private logMcpStatus(pane: string, groupName: string): void {
+    const mcpFailed = pane.match(/(\d+) MCP servers? failed/);
+    if (mcpFailed) {
+      logger.warn(
+        { group: groupName, failed: parseInt(mcpFailed[1], 10) },
+        `MCP: ${mcpFailed[0]}`,
+      );
+    } else {
+      logger.info({ group: groupName }, 'MCP: all servers connected');
+    }
   }
 
   private isContainerRunning(name: string): boolean {
