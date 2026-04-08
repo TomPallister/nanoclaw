@@ -227,7 +227,7 @@ export function buildVolumeMounts(
   ) {
     mounts.push({
       hostPath: gcalDir,
-      containerPath: '/workspace/gcal',
+      containerPath: '/home/node/.config/google-calendar-mcp',
       readonly: false, // MCP may need to refresh OAuth tokens
     });
   }
