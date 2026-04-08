@@ -226,10 +226,9 @@ export class ContainerManager {
   sendMessage(groupFolder: string, text: string): Promise<void> {
     const state = this.states.get(groupFolder);
     if (!state) {
-      logger.error({ groupFolder }, 'sendMessage: no container for group');
+      logger.error({ groupFolder, knownGroups: [...this.states.keys()] }, 'sendMessage: no container for group');
       return Promise.reject(new Error('No container for group ' + groupFolder));
     }
-
     state.mergeBuffer.push(text);
     state.lastActivity = Date.now();
 
@@ -393,40 +392,55 @@ export class ContainerManager {
     };
 
     try {
-      const loadProc = spawn(
+      // Write prompt to a temp file inside the container, then use tmux
+      // send-keys -l to type it as literal keystrokes + Enter to submit.
+      // We cannot use paste-buffer because claude's TUI enables bracketed
+      // paste mode, which wraps pasted text in escape sequences and displays
+      // it as "[Pasted text]" without submitting.
+      const writeProc = spawn(
         CONTAINER_RUNTIME_BIN,
-        ['exec', '-i', state.containerName, 'tmux', 'load-buffer', '-'],
+        [
+          'exec',
+          '-i',
+          state.containerName,
+          'bash',
+          '-c',
+          'cat > /tmp/nanoclaw-prompt.txt',
+        ],
         { stdio: ['pipe', 'ignore', 'pipe'] },
       );
-      loadProc.stdin?.end(merged);
-      loadProc.on('close', (code) => {
+      writeProc.stdin?.end(merged);
+      writeProc.on('close', (code) => {
         if (code !== 0) {
-          logger.error(
-            { group: state.group.name, code },
-            'tmux load-buffer failed',
-          );
-          rejectBatch(new Error(`tmux load-buffer exit ${code}`));
+          rejectBatch(new Error(`write prompt file exit ${code}`));
           return;
         }
-        logger.debug(
-          { group: state.group.name },
-          'load-buffer succeeded, pasting',
-        );
         try {
-          // Non-bracketed paste (no -p): tmux sends the buffer content as
-          // literal keypresses. Claude's TUI treats newlines as line breaks in
-          // the input field, then a single Enter submits the whole prompt.
-          // Bracketed paste (-p) does NOT work — claude's TUI buffers it
-          // as "[Pasted text]" and never auto-submits on Enter.
+          // Read the file content via send-keys -l (literal mode, no escape
+          // interpretation). The -l flag types characters exactly as-is.
+          // For large prompts, tmux send-keys -l handles the full content
+          // since it writes directly to the terminal PTY.
+          const content = execFileSync(
+            CONTAINER_RUNTIME_BIN,
+            [
+              'exec',
+              state.containerName,
+              'cat',
+              '/tmp/nanoclaw-prompt.txt',
+            ],
+            { stdio: 'pipe', encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 },
+          );
           execFileSync(
             CONTAINER_RUNTIME_BIN,
             [
               'exec',
               state.containerName,
               'tmux',
-              'paste-buffer',
+              'send-keys',
+              '-l',
               '-t',
               'nanoclaw:0',
+              content,
             ],
             { stdio: 'pipe' },
           );
@@ -443,21 +457,20 @@ export class ContainerManager {
             ],
             { stdio: 'pipe' },
           );
-          // turnInProgress already set at flush start (see flushNow top)
         } catch (err) {
           logger.error(
             { group: state.group.name, err },
-            'tmux paste/send-keys failed',
+            'tmux send-keys failed',
           );
           rejectBatch(
-            err instanceof Error ? err : new Error('paste/send-keys failed'),
+            err instanceof Error ? err : new Error('send-keys failed'),
           );
         }
       });
-      loadProc.on('error', (err) => {
+      writeProc.on('error', (err) => {
         logger.error(
           { group: state.group.name, err },
-          'tmux load-buffer spawn error',
+          'write prompt file spawn error',
         );
         rejectBatch(err);
       });
