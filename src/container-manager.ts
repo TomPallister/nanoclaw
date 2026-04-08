@@ -408,6 +408,10 @@ export class ContainerManager {
           rejectBatch(new Error(`tmux load-buffer exit ${code}`));
           return;
         }
+        logger.debug(
+          { group: state.group.name },
+          'load-buffer succeeded, pasting',
+        );
         try {
           // Non-bracketed paste (no -p): tmux sends the buffer content as
           // literal keypresses. Claude's TUI treats newlines as line breaks in

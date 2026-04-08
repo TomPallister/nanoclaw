@@ -319,6 +319,30 @@ server.tool(
 );
 
 server.tool(
+  'get_task',
+  'Get full details of a scheduled task including the complete prompt text.',
+  { task_id: z.string().describe('The task ID to retrieve') },
+  async (args) => {
+    const tasksFile = path.join(IPC_DIR, 'current_tasks.json');
+    try {
+      if (!fs.existsSync(tasksFile)) {
+        return { content: [{ type: 'text' as const, text: 'No scheduled tasks found.' }] };
+      }
+      const allTasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8'));
+      const task = allTasks.find((t: { id: string }) => t.id === args.task_id);
+      if (!task) {
+        return { content: [{ type: 'text' as const, text: `Task not found: ${args.task_id}` }] };
+      }
+      return { content: [{ type: 'text' as const, text: JSON.stringify(task, null, 2) }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error reading task: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  },
+);
+
+server.tool(
   'pause_task',
   'Pause a scheduled task. It will not run until resumed.',
   { task_id: z.string().describe('The task ID to pause') },

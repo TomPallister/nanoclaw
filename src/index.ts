@@ -572,9 +572,7 @@ async function main(): Promise<void> {
   const mcpSendUsedInTurn = new Set<string>(); // groupFolder
   containerManager.onOutput(async (groupFolder, output) => {
     // Track whether the MCP send tool was used in this turn
-    if (
-      output.toolUses.some((t) => t.name === 'mcp__nanoclaw__send_message')
-    ) {
+    if (output.toolUses.some((t) => t.name === 'mcp__nanoclaw__send_message')) {
       mcpSendUsedInTurn.add(groupFolder);
     }
 
@@ -582,7 +580,10 @@ async function main(): Promise<void> {
 
     // If this is the end of a turn where MCP send was used, suppress the
     // summary text — the real message was already delivered via IPC.
-    if (output.stopReason === 'end_turn' && mcpSendUsedInTurn.has(groupFolder)) {
+    if (
+      output.stopReason === 'end_turn' &&
+      mcpSendUsedInTurn.has(groupFolder)
+    ) {
       mcpSendUsedInTurn.delete(groupFolder);
       return;
     }

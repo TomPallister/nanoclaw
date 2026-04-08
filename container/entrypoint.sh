@@ -40,6 +40,10 @@ if [ ! -f "${HOME:-/home/node}/.claude.json" ]; then
   "lastOnboardingVersion": "2.1.86",
   "firstStartTime": "2026-01-01T00:00:00.000Z",
   "numStartups": 2,
+  "effortCalloutV2Dismissed": true,
+  "opusProMigrationComplete": true,
+  "sonnet1m45MigrationComplete": true,
+  "opus1mMergeNoticeSeenCount": 1,
   "projects": {
     "/workspace/group": {
       "hasTrustDialogAccepted": true,
@@ -59,6 +63,11 @@ fi
 
 # 3. Start tmux server. Wide virtual terminal to minimize line wrapping.
 tmux new-session -d -s nanoclaw -x 220 -y 50
+# Disable paste detection — tmux's assume-paste-time causes it to wrap rapid
+# character input (like paste-buffer) in bracketed paste escape sequences,
+# which makes claude's TUI buffer the input as "[Pasted text]" instead of
+# accepting it as typed input that submits on Enter.
+tmux set-option -g assume-paste-time 0
 
 # 4. Build claude command
 if [ "${NANOCLAW_RESUME:-0}" = "1" ]; then
