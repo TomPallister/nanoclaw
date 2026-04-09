@@ -691,6 +691,10 @@ export class ContainerManager {
         command: 'chrome-devtools-mcp',
         args: ['--browserUrl', `ws://${CONTAINER_HOST_GATEWAY}:9222`],
       },
+      'nuk-tpa-mcp': {
+        command: 'node',
+        args: ['/workspace/extra/nuk-tpa-mcp/dist/index.js'],
+      },
     };
     return JSON.stringify({ mcpServers });
   }
