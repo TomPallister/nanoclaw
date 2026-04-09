@@ -442,6 +442,13 @@ export class ContainerManager {
             ],
             { stdio: 'pipe' },
           );
+          // Small delay to let tmux write all content to PTY before sending Enter.
+          // For large multi-line prompts, send-keys -l needs time to write everything.
+          execFileSync(
+            CONTAINER_RUNTIME_BIN,
+            ['exec', state.containerName, 'sleep', '0.1'],
+            { stdio: 'pipe' },
+          );
           execFileSync(
             CONTAINER_RUNTIME_BIN,
             [
