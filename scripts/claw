@@ -63,6 +63,12 @@ SECRET_KEYS = [
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_AUTH_TOKEN",
     "OLLAMA_HOST",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_REGION",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 ]
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

@@ -226,7 +226,10 @@ export class ContainerManager {
   sendMessage(groupFolder: string, text: string): Promise<void> {
     const state = this.states.get(groupFolder);
     if (!state) {
-      logger.error({ groupFolder, knownGroups: [...this.states.keys()] }, 'sendMessage: no container for group');
+      logger.error(
+        { groupFolder, knownGroups: [...this.states.keys()] },
+        'sendMessage: no container for group',
+      );
       return Promise.reject(new Error('No container for group ' + groupFolder));
     }
     state.mergeBuffer.push(text);
@@ -422,12 +425,7 @@ export class ContainerManager {
           // since it writes directly to the terminal PTY.
           const content = execFileSync(
             CONTAINER_RUNTIME_BIN,
-            [
-              'exec',
-              state.containerName,
-              'cat',
-              '/tmp/nanoclaw-prompt.txt',
-            ],
+            ['exec', state.containerName, 'cat', '/tmp/nanoclaw-prompt.txt'],
             { stdio: 'pipe', encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 },
           );
           execFileSync(
@@ -602,18 +600,14 @@ export class ContainerManager {
     // Host browser CDP endpoint (always)
     args.push('-e', `HOST_BROWSER_CDP_URL=ws://${CONTAINER_HOST_GATEWAY}:9222`);
 
-    // Auth: Claude CLI uses the host's OAuth credentials copied into the
-    // per-group .claude/.credentials.json (see container-runner.ts).
-    // The credential proxy is still used for GitHub tokens and other services.
-    // Integration tests can override with a direct token.
-    const testToken = process.env.NANOCLAW_TEST_OAUTH_TOKEN;
-    if (testToken) {
-      args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${testToken}`);
-    }
+    // Credential proxy for GitHub tokens and other services (not Claude auth)
     args.push(
       '-e',
       `CREDENTIAL_PROXY_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
     );
+
+    // AWS Bedrock authentication (forwarded from .env via settings.json)
+    // These are loaded from the container's .claude/settings.json env block.
 
     // Nanoclaw-specific entrypoint config
     args.push('-e', `NANOCLAW_SESSION_ID=${sessionId}`);

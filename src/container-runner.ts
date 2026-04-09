@@ -26,7 +26,6 @@ import {
   readonlyMountArgs,
   stopContainer,
 } from './container-runtime.js';
-import { detectAuthMode } from './credential-proxy.js';
 import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
@@ -129,7 +128,15 @@ export function buildVolumeMounts(
 
   // Env vars to always forward from host .env / process.env into the container settings.
   // These are merged on every startup so adding a new key to .env takes effect after restart.
-  const FORWARDED_ENV_KEYS = ['TIMES_API_TOKEN'];
+  const FORWARDED_ENV_KEYS = [
+    'TIMES_API_TOKEN',
+    'CLAUDE_CODE_USE_BEDROCK',
+    'AWS_BEARER_TOKEN_BEDROCK',
+    'AWS_REGION',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  ];
   const forwardedEnv = readEnvFile(FORWARDED_ENV_KEYS);
   // Also pick up from process.env (e.g. exported via ~/.zshenv.local)
   for (const key of FORWARDED_ENV_KEYS) {
@@ -175,20 +182,6 @@ export function buildVolumeMounts(
     settingsFile,
     JSON.stringify(mergedSettings, null, 2) + '\n',
   );
-
-  // Sync host OAuth credentials into the per-group .claude/ so the container's
-  // claude CLI authenticates directly (bypasses credential proxy for auth).
-  const hostCredentials = path.join(
-    os.homedir(),
-    '.claude',
-    '.credentials.json',
-  );
-  if (fs.existsSync(hostCredentials)) {
-    fs.copyFileSync(
-      hostCredentials,
-      path.join(groupSessionsDir, '.credentials.json'),
-    );
-  }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
@@ -299,12 +292,6 @@ function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // Route API traffic through the credential proxy (containers never see real secrets)
-  args.push(
-    '-e',
-    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
-  );
-
   // Credential proxy URL for GitHub credential helper and gh wrapper
   args.push(
     '-e',
@@ -313,17 +300,6 @@ function buildContainerArgs(
 
   // Chrome DevTools Protocol URL for host browser automation
   args.push('-e', `HOST_BROWSER_CDP_URL=ws://${CONTAINER_HOST_GATEWAY}:9222`);
-
-  // Mirror the host's auth method with a placeholder value.
-  // API key mode: SDK sends x-api-key, proxy replaces with real key.
-  // OAuth mode:   SDK exchanges placeholder token for temp API key,
-  //               proxy injects real OAuth token on that exchange request.
-  const authMode = detectAuthMode();
-  if (authMode === 'api-key') {
-    args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
-  } else {
-    args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
-  }
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
