@@ -578,6 +578,13 @@ async function main(): Promise<void> {
 
     if (!output.text) return;
 
+    // Skip synthetic "No response requested." messages from Claude Code.
+    // These appear when there's no user-facing output (e.g., all text is
+    // wrapped in <internal> tags for scheduled tasks).
+    if (output.text.trim() === 'No response requested.') {
+      return;
+    }
+
     // If this is the end of a turn where MCP send was used, suppress the
     // summary text — the real message was already delivered via IPC.
     if (
