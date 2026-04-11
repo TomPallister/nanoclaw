@@ -10,7 +10,6 @@ import { isValidTimezone } from './timezone.js';
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
-  'TELEGRAM_BOT_POOL',
   'ONECLI_URL',
   'TZ',
 ]);
@@ -77,15 +76,6 @@ function escapeRegex(str: string): string {
 export function buildTriggerPattern(trigger: string): RegExp {
   return new RegExp(`^${escapeRegex(trigger.trim())}\\b`, 'i');
 }
-
-export const TELEGRAM_BOT_POOL = (
-  process.env.TELEGRAM_BOT_POOL ||
-  envConfig.TELEGRAM_BOT_POOL ||
-  ''
-)
-  .split(',')
-  .map((t) => t.trim())
-  .filter(Boolean);
 
 export const DEFAULT_TRIGGER = `@${ASSISTANT_NAME}`;
 

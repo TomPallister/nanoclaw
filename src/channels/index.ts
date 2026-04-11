@@ -8,7 +8,5 @@ import './gmail.js';
 
 // slack
 
-// telegram
-
 // whatsapp
 import './whatsapp.js';

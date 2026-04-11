@@ -6,10 +6,8 @@ import { CronExpressionParser } from 'cron-parser';
 import {
   DATA_DIR,
   IPC_POLL_INTERVAL,
-  TELEGRAM_BOT_POOL,
   TIMEZONE,
 } from './config.js';
-import { sendPoolMessage, sendPoolPhoto } from './channels/telegram.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -88,20 +86,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  if (
-                    data.sender &&
-                    data.chatJid.startsWith('tg:') &&
-                    TELEGRAM_BOT_POOL.length > 0
-                  ) {
-                    await sendPoolMessage(
-                      data.chatJid,
-                      data.text,
-                      data.sender,
-                      sourceGroup,
-                    );
-                  } else {
-                    await deps.sendMessage(data.chatJid, data.text);
-                  }
+                  await deps.sendMessage(data.chatJid, data.text);
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
@@ -118,21 +103,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  if (
-                    data.sender &&
-                    data.chatJid.startsWith('tg:') &&
-                    TELEGRAM_BOT_POOL.length > 0
-                  ) {
-                    await sendPoolPhoto(
-                      data.chatJid,
-                      data.url,
-                      data.caption,
-                      data.sender,
-                      sourceGroup,
-                    );
-                  } else {
-                    await deps.sendPhoto(data.chatJid, data.url, data.caption);
-                  }
+                  await deps.sendPhoto(data.chatJid, data.url, data.caption);
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC photo sent',
