@@ -4,6 +4,7 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  IDLE_TIMEOUT,
   POLL_INTERVAL,
   TELEGRAM_BOT_POOL,
   TIMEZONE,
@@ -17,18 +18,20 @@ import {
 } from './channels/registry.js';
 import {
   ContainerOutput,
+  runContainerAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
-import { ContainerManager } from './container-manager.js';
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
   PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
+  deleteSession,
   getAllChats,
   getAllRegisteredGroups,
+  getAllSessions,
   getAllTasks,
   getMessagesSince,
   getNewMessages,
@@ -36,6 +39,7 @@ import {
   initDatabase,
   setRegisteredGroup,
   setRouterState,
+  setSession,
   storeChatMetadata,
   storeMessage,
 } from './db.js';
@@ -64,13 +68,13 @@ import { logger } from './logger.js';
 export { escapeXml, formatMessages } from './router.js';
 
 let lastTimestamp = '';
+let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
-const containerManager = new ContainerManager();
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -81,6 +85,7 @@ function loadState(): void {
     logger.warn('Corrupted last_agent_timestamp in DB, resetting');
     lastAgentTimestamp = {};
   }
+  sessions = getAllSessions();
   registeredGroups = getAllRegisteredGroups();
   logger.info(
     { groupCount: Object.keys(registeredGroups).length },
@@ -193,7 +198,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     'Processing messages',
   );
 
+  // Track idle timer for closing stdin when agent is idle
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const resetIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      logger.debug(
+        { group: group.name },
+        'Idle timeout, closing container stdin',
+      );
+      queue.closeStdin(chatJid);
+    }, IDLE_TIMEOUT);
+  };
+
   await channel.setTyping?.(chatJid, true);
+  let hadError = false;
   let outputSentToUser = false;
 
   const output = await runAgent(
@@ -202,26 +222,37 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     chatJid,
     imageAttachments,
     async (result) => {
-      // Track whether output was sent — used for cursor rollback on error.
-      // Actual channel delivery is handled by the global output listener
-      // registered in main() so both user messages and scheduled tasks
-      // get their output routed.
+      // Streaming output callback — called for each agent result
       if (result.result) {
         const raw =
           typeof result.result === 'string'
             ? result.result
             : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text) {
+          await channel.sendMessage(chatJid, text);
           outputSentToUser = true;
         }
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
+      }
+
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
+      }
+
+      if (result.status === 'error') {
+        hadError = true;
       }
     },
   );
 
   await channel.setTyping?.(chatJid, false);
+  if (idleTimer) clearTimeout(idleTimer);
 
-  if (output === 'error') {
+  if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
@@ -252,6 +283,7 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
+  const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -278,56 +310,67 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
-  // Prefix prompt with image attachment paths so Claude can Read them
-  let finalPrompt = prompt;
-  if (imageAttachments.length > 0) {
-    const attachLines = imageAttachments
-      .map((a) => `[image attached: ${a.relativePath}]`)
-      .join('\n');
-    finalPrompt = `${attachLines}\n\n${prompt}`;
-  }
+  // Wrap onOutput to track session ID from streamed results
+  const wrappedOnOutput = onOutput
+    ? async (output: ContainerOutput) => {
+        if (output.newSessionId) {
+          sessions[group.folder] = output.newSessionId;
+          setSession(group.folder, output.newSessionId);
+        }
+        await onOutput(output);
+      }
+    : undefined;
 
-  // Ensure container is running (idempotent — no-op if already up)
   try {
-    await containerManager.ensureRunning(group, chatJid);
-  } catch (err) {
-    logger.error({ group: group.name, err }, 'ensureRunning failed');
-    return 'error';
-  }
-
-  // Register a per-call output listener that streams chunks to the caller
-  let unsubscribe: (() => void) | null = null;
-  if (onOutput) {
-    const listener = async (
-      gf: string,
-      out: {
-        text: string;
-        toolUses: Array<{ name: string; input: unknown }>;
-        stopReason: string | null;
+    const output = await runContainerAgent(
+      group,
+      {
+        prompt,
+        sessionId,
+        groupFolder: group.folder,
+        chatJid,
+        isMain,
+        assistantName: ASSISTANT_NAME,
+        ...(imageAttachments.length > 0 && { imageAttachments }),
       },
-    ) => {
-      if (gf !== group.folder) return;
-      if (!out.text) return; // skip tool-use-only events
-      const containerOutput: ContainerOutput = {
-        status: 'success',
-        result: out.text,
-      };
-      await onOutput(containerOutput);
-    };
-    unsubscribe = containerManager.onOutput(listener);
-  }
+      (proc, containerName) =>
+        queue.registerProcess(chatJid, proc, containerName, group.folder),
+      wrappedOnOutput,
+    );
 
-  try {
-    await containerManager.sendMessage(group.folder, finalPrompt);
-    // Drain any output files whose fs.watch events arrived after the
-    // turn-complete signal but were written before it (event coalescing).
-    await containerManager.drainOutputs(group.folder);
+    if (output.newSessionId) {
+      sessions[group.folder] = output.newSessionId;
+      setSession(group.folder, output.newSessionId);
+    }
+
+    if (output.status === 'error') {
+      // Check if the error is due to a missing session file
+      if (
+        output.error &&
+        output.error.includes('No conversation found with session ID')
+      ) {
+        logger.warn(
+          { group: group.name, sessionId, error: output.error },
+          'Session file missing, clearing session and will retry with fresh session',
+        );
+        // Clear the corrupted session from database and memory
+        delete sessions[group.folder];
+        deleteSession(group.folder);
+        // Return error to trigger retry, but now with no session ID (fresh start)
+        return 'error';
+      }
+
+      logger.error(
+        { group: group.name, error: output.error },
+        'Container agent error',
+      );
+      return 'error';
+    }
+
     return 'success';
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
-  } finally {
-    if (unsubscribe) unsubscribe();
   }
 }
 
@@ -394,9 +437,35 @@ async function startMessageLoop(): Promise<void> {
             if (!hasTrigger) continue;
           }
 
-          // Enqueue through the GroupQueue — processGroupMessages will
-          // independently fetch and format the messages via lastAgentTimestamp.
-          queue.enqueueMessageCheck(chatJid);
+          // Pull all messages since lastAgentTimestamp so non-trigger
+          // context that accumulated between triggers is included.
+          const allPending = getMessagesSince(
+            chatJid,
+            lastAgentTimestamp[chatJid] || '',
+            ASSISTANT_NAME,
+          );
+          const messagesToSend =
+            allPending.length > 0 ? allPending : groupMessages;
+          const formatted = formatMessages(messagesToSend, TIMEZONE);
+
+          if (queue.sendMessage(chatJid, formatted)) {
+            logger.debug(
+              { chatJid, count: messagesToSend.length },
+              'Piped messages to active container',
+            );
+            lastAgentTimestamp[chatJid] =
+              messagesToSend[messagesToSend.length - 1].timestamp;
+            saveState();
+            // Show typing indicator while the container processes the piped message
+            channel
+              .setTyping?.(chatJid, true)
+              ?.catch((err) =>
+                logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
+              );
+          } else {
+            // No active container — enqueue for a new one
+            queue.enqueueMessageCheck(chatJid);
+          }
         }
       }
     } catch (err) {
@@ -447,7 +516,6 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
     await queue.shutdown(10000);
-    await containerManager.stopAll();
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
   };
@@ -561,26 +629,10 @@ async function main(): Promise<void> {
     await initBotPool(TELEGRAM_BOT_POOL);
   }
 
-  // Global output listener: routes ALL assistant text from any container to the
-  // correct channel. Handles both user-message and scheduled-task output.
-  // Per-call listeners in runAgent are only for tracking outputSentToUser.
-  containerManager.onOutput(async (groupFolder, output) => {
-    if (!output.text) return;
-    const entry = Object.entries(registeredGroups).find(
-      ([, g]) => g.folder === groupFolder,
-    );
-    if (!entry) return;
-    const [chatJid] = entry;
-    const channel = findChannel(channels, chatJid);
-    if (!channel) return;
-    // formatOutbound strips <internal> tags and trims
-    const text = formatOutbound(output.text);
-    if (text) await channel.sendMessage(chatJid, text);
-  });
-
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
+    getSessions: () => sessions,
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) =>
       queue.registerProcess(groupJid, proc, containerName, groupFolder),
@@ -592,10 +644,6 @@ async function main(): Promise<void> {
       }
       const text = formatOutbound(rawText);
       if (text) await channel.sendMessage(jid, text);
-    },
-    sendToAgent: async (group, chatJid, text) => {
-      await containerManager.ensureRunning(group, chatJid);
-      await containerManager.sendMessage(group.folder, text);
     },
   });
   startIpcWatcher({
@@ -663,19 +711,6 @@ async function main(): Promise<void> {
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);
-
-  // Boot a persistent container for each registered group (eager lifecycle)
-  for (const [chatJid, group] of Object.entries(registeredGroups)) {
-    try {
-      await containerManager.ensureRunning(group, chatJid);
-    } catch (err) {
-      logger.error(
-        { group: group.name, err },
-        'Failed to start container at boot',
-      );
-    }
-  }
-
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');

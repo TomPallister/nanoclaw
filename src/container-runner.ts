@@ -161,8 +161,6 @@ export function buildVolumeMounts(
 
   const mergedSettings = {
     ...existingSettings,
-    // Skip the bypass-permissions warning dialog (non-interactive tmux session)
-    skipDangerousModePermissionPrompt: true,
     env: {
       ...baseEnv,
       ...(existingSettings.env || {}),
@@ -285,11 +283,15 @@ function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // Route API traffic through the credential proxy (containers never see real secrets)
-  args.push(
-    '-e',
-    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
-  );
+  // Bedrock mode: SDK talks directly to AWS, so we skip the credential proxy
+  // for Claude API traffic. For API key / OAuth modes, route through the proxy.
+  const authMode = detectAuthMode();
+  if (authMode !== 'bedrock') {
+    args.push(
+      '-e',
+      `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+    );
+  }
 
   // Credential proxy URL for GitHub credential helper and gh wrapper
   args.push(
@@ -304,8 +306,23 @@ function buildContainerArgs(
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
   // OAuth mode:   SDK exchanges placeholder token for temp API key,
   //               proxy injects real OAuth token on that exchange request.
-  const authMode = detectAuthMode();
-  if (authMode === 'api-key') {
+  // Bedrock mode: SDK calls AWS Bedrock directly; no credential proxy needed
+  //               for Claude API (still used for GitHub credential endpoint).
+  if (authMode === 'bedrock') {
+    args.push('-e', 'CLAUDE_CODE_USE_BEDROCK=1');
+    const bedrockKeys = [
+      'AWS_ACCESS_KEY_ID',
+      'AWS_SECRET_ACCESS_KEY',
+      'AWS_SESSION_TOKEN',
+      'AWS_REGION',
+      'AWS_DEFAULT_REGION',
+      'ANTHROPIC_MODEL',
+    ];
+    const bedrockEnv = readEnvFile(bedrockKeys);
+    for (const key of bedrockKeys) {
+      if (bedrockEnv[key]) args.push('-e', `${key}=${bedrockEnv[key]}`);
+    }
+  } else if (authMode === 'api-key') {
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');

@@ -22,9 +22,6 @@ RUN apt-get update && apt-get install -y \
     libcups2 \
     libdrm2 \
     libxshmfence1 \
-    tmux \
-    jq \
-    sudo \
     curl \
     git \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -58,22 +55,13 @@ COPY agent-runner/ ./
 RUN npm run build
 
 # Create workspace directories
-RUN mkdir -p /workspace/group /workspace/global /workspace/extra \
-    /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input \
-    /workspace/ipc/output /workspace/ipc/turn-complete /workspace/ipc/health
+RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
-# Copy transcript-watcher sidecar (runs as foreground in tmux-mode entrypoint)
-COPY transcript-watcher/ /app/transcript-watcher/
-
-# Tmux-based entrypoint (launches claude CLI in a persistent tmux session,
-# runs transcript-watcher in foreground, emits IPC events to /workspace/ipc/output).
+# Create entrypoint script
+# Container input (prompt, group info) is passed via stdin JSON.
 # Credentials are injected by the host's credential proxy — never passed here.
-COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
-
-# World-writable /etc/claude-code so entrypoint can write managed-mcp.json
-# regardless of whether container runs as node (uid 1000) or host uid via --user.
-RUN mkdir -p /etc/claude-code && chmod 777 /etc/claude-code
+# Follow-up messages arrive via IPC files in /workspace/ipc/input/
+RUN printf '#!/bin/bash\nset -e\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace && chmod 777 /home/node

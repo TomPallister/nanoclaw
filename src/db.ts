@@ -119,15 +119,6 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
-  // Add claude_session_id column for tmux-based agent (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN claude_session_id TEXT`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
   // Add channel and is_group columns if they don't exist (migration for existing DBs)
   try {
     database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
@@ -548,27 +539,6 @@ export function getAllSessions(): Record<string, string> {
     result[row.group_folder] = row.session_id;
   }
   return result;
-}
-
-// --- Claude session id accessors (tmux-based agent) ---
-
-export function getGroupClaudeSessionId(jid: string): string | null {
-  const row = db
-    .prepare('SELECT claude_session_id FROM registered_groups WHERE jid = ?')
-    .get(jid) as { claude_session_id: string | null } | undefined;
-  return row?.claude_session_id ?? null;
-}
-
-export function setGroupClaudeSessionId(jid: string, sessionId: string): void {
-  db.prepare(
-    'UPDATE registered_groups SET claude_session_id = ? WHERE jid = ?',
-  ).run(sessionId, jid);
-}
-
-export function clearGroupClaudeSessionId(jid: string): void {
-  db.prepare(
-    'UPDATE registered_groups SET claude_session_id = NULL WHERE jid = ?',
-  ).run(jid);
 }
 
 // --- Registered group accessors ---
