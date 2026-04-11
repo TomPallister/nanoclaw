@@ -319,7 +319,6 @@ function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-
   // Credential proxy URL for GitHub credential helper and gh wrapper
   args.push(
     '-e',
@@ -328,7 +327,6 @@ function buildContainerArgs(
 
   // Chrome DevTools Protocol URL for host browser automation
   args.push('-e', `HOST_BROWSER_CDP_URL=ws://${CONTAINER_HOST_GATEWAY}:9222`);
-
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());

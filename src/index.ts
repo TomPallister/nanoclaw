@@ -490,7 +490,10 @@ async function startMessageLoop(): Promise<void> {
         }
 
         for (const [chatJid, groupMessages] of messagesByGroup) {
-          logger.debug({ chatJid, messageCount: groupMessages.length }, 'Processing group messages');
+          logger.debug(
+            { chatJid, messageCount: groupMessages.length },
+            'Processing group messages',
+          );
           const group = registeredGroups[chatJid];
           if (!group) {
             logger.warn({ chatJid }, 'Group not registered, skipping');
@@ -744,7 +747,6 @@ async function main(): Promise<void> {
   containerManager.onTurnComplete((groupFolder) => {
     mcpSendUsedInTurn.delete(groupFolder);
   });
-
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
