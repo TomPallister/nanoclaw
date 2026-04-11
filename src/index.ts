@@ -1,13 +1,20 @@
 import fs from 'fs';
 import path from 'path';
 
+import { OneCLI } from '@onecli-sh/sdk';
+
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  DEFAULT_TRIGGER,
+  getTriggerPattern,
+  GROUPS_DIR,
+  IDLE_TIMEOUT,
+  MAX_MESSAGES_PER_PROMPT,
+  ONECLI_URL,
   POLL_INTERVAL,
   TELEGRAM_BOT_POOL,
   TIMEZONE,
-  TRIGGER_PATTERN,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
@@ -17,25 +24,29 @@ import {
 } from './channels/registry.js';
 import {
   ContainerOutput,
+  runContainerAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
-import { ContainerManager } from './container-manager.js';
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
   PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
+  deleteSession,
   getAllChats,
   getAllRegisteredGroups,
+  getAllSessions,
   getAllTasks,
+  getLastBotMessageTimestamp,
   getMessagesSince,
   getNewMessages,
   getRouterState,
   initDatabase,
   setRegisteredGroup,
   setRouterState,
+  setSession,
   storeChatMetadata,
   storeMessage,
 } from './db.js';
@@ -55,6 +66,7 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
+import { startSessionCleanup } from './session-cleanup.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { parseImageReferences } from './image.js';
@@ -64,13 +76,34 @@ import { logger } from './logger.js';
 export { escapeXml, formatMessages } from './router.js';
 
 let lastTimestamp = '';
+let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
-const containerManager = new ContainerManager();
+
+const onecli = new OneCLI({ url: ONECLI_URL });
+
+function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
+  if (group.isMain) return;
+  const identifier = group.folder.toLowerCase().replace(/_/g, '-');
+  onecli.ensureAgent({ name: group.name, identifier }).then(
+    (res) => {
+      logger.info(
+        { jid, identifier, created: res.created },
+        'OneCLI agent ensured',
+      );
+    },
+    (err) => {
+      logger.debug(
+        { jid, identifier, err: String(err) },
+        'OneCLI agent ensure skipped',
+      );
+    },
+  );
+}
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -81,11 +114,33 @@ function loadState(): void {
     logger.warn('Corrupted last_agent_timestamp in DB, resetting');
     lastAgentTimestamp = {};
   }
+  sessions = getAllSessions();
   registeredGroups = getAllRegisteredGroups();
   logger.info(
     { groupCount: Object.keys(registeredGroups).length },
     'State loaded',
   );
+}
+
+/**
+ * Return the message cursor for a group, recovering from the last bot reply
+ * if lastAgentTimestamp is missing (new group, corrupted state, restart).
+ */
+function getOrRecoverCursor(chatJid: string): string {
+  const existing = lastAgentTimestamp[chatJid];
+  if (existing) return existing;
+
+  const botTs = getLastBotMessageTimestamp(chatJid, ASSISTANT_NAME);
+  if (botTs) {
+    logger.info(
+      { chatJid, recoveredFrom: botTs },
+      'Recovered message cursor from last bot reply',
+    );
+    lastAgentTimestamp[chatJid] = botTs;
+    saveState();
+    return botTs;
+  }
+  return '';
 }
 
 function saveState(): void {
@@ -110,6 +165,29 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
 
   // Create group folder
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+
+  // Copy CLAUDE.md template into the new group folder so agents have
+  // identity and instructions from the first run.  (Fixes #1391)
+  const groupMdFile = path.join(groupDir, 'CLAUDE.md');
+  if (!fs.existsSync(groupMdFile)) {
+    const templateFile = path.join(
+      GROUPS_DIR,
+      group.isMain ? 'main' : 'global',
+      'CLAUDE.md',
+    );
+    if (fs.existsSync(templateFile)) {
+      let content = fs.readFileSync(templateFile, 'utf-8');
+      if (ASSISTANT_NAME !== 'Andy') {
+        content = content.replace(/^# Andy$/m, `# ${ASSISTANT_NAME}`);
+        content = content.replace(/You are Andy/g, `You are ${ASSISTANT_NAME}`);
+      }
+      fs.writeFileSync(groupMdFile, content);
+      logger.info({ folder: group.folder }, 'Created CLAUDE.md from template');
+    }
+  }
+
+  // Ensure a corresponding OneCLI agent exists (best-effort, non-blocking)
+  ensureOneCLIAgent(jid, group);
 
   logger.info(
     { jid, name: group.name, folder: group.folder },
@@ -158,21 +236,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const isMainGroup = group.isMain === true;
 
-  const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
     chatJid,
-    sinceTimestamp,
+    getOrRecoverCursor(chatJid),
     ASSISTANT_NAME,
+    MAX_MESSAGES_PER_PROMPT,
   );
 
   if (missedMessages.length === 0) return true;
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
+    const triggerPattern = getTriggerPattern(group.trigger);
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
       (m) =>
-        TRIGGER_PATTERN.test(m.content.trim()) &&
+        triggerPattern.test(m.content.trim()) &&
         (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
     );
     if (!hasTrigger) return true;
@@ -193,7 +272,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     'Processing messages',
   );
 
+  // Track idle timer for closing stdin when agent is idle
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const resetIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      logger.debug(
+        { group: group.name },
+        'Idle timeout, closing container stdin',
+      );
+      queue.closeStdin(chatJid);
+    }, IDLE_TIMEOUT);
+  };
+
   await channel.setTyping?.(chatJid, true);
+  let hadError = false;
   let outputSentToUser = false;
 
   const output = await runAgent(
@@ -202,26 +296,37 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     chatJid,
     imageAttachments,
     async (result) => {
-      // Track whether output was sent — used for cursor rollback on error.
-      // Actual channel delivery is handled by the global output listener
-      // registered in main() so both user messages and scheduled tasks
-      // get their output routed.
+      // Streaming output callback — called for each agent result
       if (result.result) {
         const raw =
           typeof result.result === 'string'
             ? result.result
             : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text) {
+          await channel.sendMessage(chatJid, text);
           outputSentToUser = true;
         }
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
+      }
+
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
+      }
+
+      if (result.status === 'error') {
+        hadError = true;
       }
     },
   );
 
   await channel.setTyping?.(chatJid, false);
+  if (idleTimer) clearTimeout(idleTimer);
 
-  if (output === 'error') {
+  if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
@@ -252,6 +357,7 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
+  const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -262,6 +368,7 @@ async function runAgent(
       id: t.id,
       groupFolder: t.group_folder,
       prompt: t.prompt,
+      script: t.script || undefined,
       schedule_type: t.schedule_type,
       schedule_value: t.schedule_value,
       status: t.status,
@@ -278,56 +385,71 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
-  // Prefix prompt with image attachment paths so Claude can Read them
-  let finalPrompt = prompt;
-  if (imageAttachments.length > 0) {
-    const attachLines = imageAttachments
-      .map((a) => `[image attached: ${a.relativePath}]`)
-      .join('\n');
-    finalPrompt = `${attachLines}\n\n${prompt}`;
-  }
+  // Wrap onOutput to track session ID from streamed results
+  const wrappedOnOutput = onOutput
+    ? async (output: ContainerOutput) => {
+        if (output.newSessionId) {
+          sessions[group.folder] = output.newSessionId;
+          setSession(group.folder, output.newSessionId);
+        }
+        await onOutput(output);
+      }
+    : undefined;
 
-  // Ensure container is running (idempotent — no-op if already up)
   try {
-    await containerManager.ensureRunning(group, chatJid);
-  } catch (err) {
-    logger.error({ group: group.name, err }, 'ensureRunning failed');
-    return 'error';
-  }
-
-  // Register a per-call output listener that streams chunks to the caller
-  let unsubscribe: (() => void) | null = null;
-  if (onOutput) {
-    const listener = async (
-      gf: string,
-      out: {
-        text: string;
-        toolUses: Array<{ name: string; input: unknown }>;
-        stopReason: string | null;
+    const output = await runContainerAgent(
+      group,
+      {
+        prompt,
+        sessionId,
+        groupFolder: group.folder,
+        chatJid,
+        isMain,
+        assistantName: ASSISTANT_NAME,
+        ...(imageAttachments.length > 0 && { imageAttachments }),
       },
-    ) => {
-      if (gf !== group.folder) return;
-      if (!out.text) return; // skip tool-use-only events
-      const containerOutput: ContainerOutput = {
-        status: 'success',
-        result: out.text,
-      };
-      await onOutput(containerOutput);
-    };
-    unsubscribe = containerManager.onOutput(listener);
-  }
+      (proc, containerName) =>
+        queue.registerProcess(chatJid, proc, containerName, group.folder),
+      wrappedOnOutput,
+    );
 
-  try {
-    await containerManager.sendMessage(group.folder, finalPrompt);
-    // Drain any output files whose fs.watch events arrived after the
-    // turn-complete signal but were written before it (event coalescing).
-    await containerManager.drainOutputs(group.folder);
+    if (output.newSessionId) {
+      sessions[group.folder] = output.newSessionId;
+      setSession(group.folder, output.newSessionId);
+    }
+
+    if (output.status === 'error') {
+      // Detect stale/corrupt session — clear it so the next retry starts fresh.
+      // The session .jsonl can go missing after a crash mid-write, manual
+      // deletion, or disk-full. The existing backoff in group-queue.ts
+      // handles the retry; we just need to remove the broken session ID.
+      const isStaleSession =
+        sessionId &&
+        output.error &&
+        /no conversation found|ENOENT.*\.jsonl|session.*not found/i.test(
+          output.error,
+        );
+
+      if (isStaleSession) {
+        logger.warn(
+          { group: group.name, staleSessionId: sessionId, error: output.error },
+          'Stale session detected — clearing for next retry',
+        );
+        delete sessions[group.folder];
+        deleteSession(group.folder);
+      }
+
+      logger.error(
+        { group: group.name, error: output.error },
+        'Container agent error',
+      );
+      return 'error';
+    }
+
     return 'success';
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
-  } finally {
-    if (unsubscribe) unsubscribe();
   }
 }
 
@@ -338,7 +460,7 @@ async function startMessageLoop(): Promise<void> {
   }
   messageLoopRunning = true;
 
-  logger.info(`NanoClaw running (trigger: @${ASSISTANT_NAME})`);
+  logger.info(`NanoClaw running (default trigger: ${DEFAULT_TRIGGER})`);
 
   while (true) {
     try {
@@ -390,10 +512,11 @@ async function startMessageLoop(): Promise<void> {
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
+            const triggerPattern = getTriggerPattern(group.trigger);
             const allowlistCfg = loadSenderAllowlist();
             const hasTrigger = groupMessages.some(
               (m) =>
-                TRIGGER_PATTERN.test(m.content.trim()) &&
+                triggerPattern.test(m.content.trim()) &&
                 (m.is_from_me ||
                   isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
             );
@@ -420,8 +543,12 @@ async function startMessageLoop(): Promise<void> {
  */
 function recoverPendingMessages(): void {
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
-    const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
-    const pending = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
+    const pending = getMessagesSince(
+      chatJid,
+      getOrRecoverCursor(chatJid),
+      ASSISTANT_NAME,
+      MAX_MESSAGES_PER_PROMPT,
+    );
     if (pending.length > 0) {
       logger.info(
         { group: group.name, pendingCount: pending.length },
@@ -455,7 +582,6 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
     await queue.shutdown(10000);
-    await containerManager.stopAll();
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
   };
@@ -619,9 +745,11 @@ async function main(): Promise<void> {
     mcpSendUsedInTurn.delete(groupFolder);
   });
 
+
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
+    getSessions: () => sessions,
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) =>
       queue.registerProcess(groupJid, proc, containerName, groupFolder),
@@ -633,10 +761,6 @@ async function main(): Promise<void> {
       }
       const text = formatOutbound(rawText);
       if (text) await channel.sendMessage(jid, text);
-    },
-    sendToAgent: async (group, chatJid, text) => {
-      await containerManager.ensureRunning(group, chatJid);
-      await containerManager.sendMessage(group.folder, text);
     },
   });
   startIpcWatcher({
@@ -693,6 +817,7 @@ async function main(): Promise<void> {
         id: t.id,
         groupFolder: t.group_folder,
         prompt: t.prompt,
+        script: t.script || undefined,
         schedule_type: t.schedule_type,
         schedule_value: t.schedule_value,
         status: t.status,
@@ -703,20 +828,8 @@ async function main(): Promise<void> {
       }
     },
   });
+  startSessionCleanup();
   queue.setProcessMessagesFn(processGroupMessages);
-
-  // Boot a persistent container for each registered group (eager lifecycle)
-  for (const [chatJid, group] of Object.entries(registeredGroups)) {
-    try {
-      await containerManager.ensureRunning(group, chatJid);
-    } catch (err) {
-      logger.error(
-        { group: group.name, err },
-        'Failed to start container at boot',
-      );
-    }
-  }
-
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');

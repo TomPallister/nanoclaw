@@ -43,12 +43,24 @@ describe('readonlyMountArgs', () => {
 });
 
 describe('stopContainer', () => {
-  it('returns bin and args for execFile', () => {
-    const result = stopContainer('nanoclaw-test-123');
-    expect(result).toEqual({
-      bin: CONTAINER_RUNTIME_BIN,
-      args: ['stop', '-t', '1', 'nanoclaw-test-123'],
-    });
+  it('calls docker stop for valid container names', () => {
+    stopContainer('nanoclaw-test-123');
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      CONTAINER_RUNTIME_BIN,
+      ['stop', '-t', '1', 'nanoclaw-test-123'],
+      { stdio: 'pipe' },
+    );
+  });
+
+  it('rejects names with shell metacharacters', () => {
+    expect(() => stopContainer('foo; rm -rf /')).toThrow(
+      'Invalid container name',
+    );
+    expect(() => stopContainer('foo$(whoami)')).toThrow(
+      'Invalid container name',
+    );
+    expect(() => stopContainer('foo`id`')).toThrow('Invalid container name');
+    expect(mockExecSync).not.toHaveBeenCalled();
   });
 });
 

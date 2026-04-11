@@ -17,7 +17,7 @@ import { request as httpRequest, RequestOptions } from 'http';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
-export type AuthMode = 'api-key' | 'oauth';
+export type AuthMode = 'api-key' | 'oauth' | 'bedrock';
 
 export interface ProxyConfig {
   authMode: AuthMode;
@@ -135,6 +135,15 @@ export function startCredentialProxy(
 
 /** Detect which auth mode the host is configured for. */
 export function detectAuthMode(): AuthMode {
-  const secrets = readEnvFile(['ANTHROPIC_API_KEY']);
+  const secrets = readEnvFile(['CLAUDE_CODE_USE_BEDROCK', 'ANTHROPIC_API_KEY']);
+  if (secrets.CLAUDE_CODE_USE_BEDROCK === '1') return 'bedrock';
   return secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
 }
+
+/** Bedrock env vars to forward into containers. */
+export const BEDROCK_ENV_KEYS = [
+  'AWS_BEARER_TOKEN_BEDROCK',
+  'AWS_REGION',
+  'AWS_DEFAULT_REGION',
+  'ANTHROPIC_MODEL',
+] as const;
