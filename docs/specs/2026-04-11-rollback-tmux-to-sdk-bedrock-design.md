@@ -156,9 +156,7 @@ The Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) supports Bedrock nativel
 | Variable | Purpose |
 |----------|---------|
 | `CLAUDE_CODE_USE_BEDROCK=1` | Tells the SDK to use Bedrock instead of Anthropic API |
-| `AWS_ACCESS_KEY_ID` | AWS credentials |
-| `AWS_SECRET_ACCESS_KEY` | AWS credentials |
-| `AWS_SESSION_TOKEN` | Optional, for temporary credentials / STS |
+| `AWS_BEARER_TOKEN_BEDROCK` | Bearer token for AWS Bedrock authentication |
 | `AWS_REGION` | Bedrock region (e.g., `us-east-1`) |
 | `ANTHROPIC_MODEL` | Model ID (e.g., `us.anthropic.claude-sonnet-4-20250514`) |
 
@@ -180,8 +178,7 @@ When `CLAUDE_CODE_USE_BEDROCK=1` is set, the SDK bypasses `ANTHROPIC_BASE_URL` e
 1. Add Bedrock env vars to `.env`:
    ```
    CLAUDE_CODE_USE_BEDROCK=1
-   AWS_ACCESS_KEY_ID=AKIA...
-   AWS_SECRET_ACCESS_KEY=...
+   AWS_BEARER_TOKEN_BEDROCK=...
    AWS_REGION=us-east-1
    ANTHROPIC_MODEL=us.anthropic.claude-sonnet-4-20250514
    ```

@@ -139,3 +139,11 @@ export function detectAuthMode(): AuthMode {
   if (secrets.CLAUDE_CODE_USE_BEDROCK === '1') return 'bedrock';
   return secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
 }
+
+/** Bedrock env vars to forward into containers. */
+export const BEDROCK_ENV_KEYS = [
+  'AWS_BEARER_TOKEN_BEDROCK',
+  'AWS_REGION',
+  'AWS_DEFAULT_REGION',
+  'ANTHROPIC_MODEL',
+] as const;

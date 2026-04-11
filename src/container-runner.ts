@@ -311,9 +311,7 @@ function buildContainerArgs(
   if (authMode === 'bedrock') {
     args.push('-e', 'CLAUDE_CODE_USE_BEDROCK=1');
     const bedrockKeys = [
-      'AWS_ACCESS_KEY_ID',
-      'AWS_SECRET_ACCESS_KEY',
-      'AWS_SESSION_TOKEN',
+      'AWS_BEARER_TOKEN_BEDROCK',
       'AWS_REGION',
       'AWS_DEFAULT_REGION',
       'ANTHROPIC_MODEL',
