@@ -83,9 +83,14 @@ export function readonlyMountArgs(
   return ['-v', `${hostPath}:${containerPath}:ro`];
 }
 
-/** Returns the bin and args to stop a container by name. */
-export function stopContainer(name: string): { bin: string; args: string[] } {
-  return { bin: CONTAINER_RUNTIME_BIN, args: ['stop', '-t', '1', name] };
+/** Stop a container by name. Uses execFileSync to avoid shell injection. */
+export function stopContainer(name: string): void {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name)) {
+    throw new Error(`Invalid container name: ${name}`);
+  }
+  execFileSync(CONTAINER_RUNTIME_BIN, ['stop', '-t', '1', name], {
+    stdio: 'pipe',
+  });
 }
 
 /** Ensure the container runtime is running, starting it if needed. */
