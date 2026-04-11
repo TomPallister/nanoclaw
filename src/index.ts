@@ -368,17 +368,23 @@ async function startMessageLoop(): Promise<void> {
         }
 
         for (const [chatJid, groupMessages] of messagesByGroup) {
+          logger.debug({ chatJid, messageCount: groupMessages.length }, 'Processing group messages');
           const group = registeredGroups[chatJid];
-          if (!group) continue;
+          if (!group) {
+            logger.warn({ chatJid }, 'Group not registered, skipping');
+            continue;
+          }
 
           const channel = findChannel(channels, chatJid);
           if (!channel) {
             logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
             continue;
           }
+          logger.debug({ chatJid, channelName: channel.name }, 'Channel found');
 
           const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+          logger.debug({ chatJid, isMainGroup, needsTrigger }, 'Trigger check');
 
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
@@ -391,11 +397,13 @@ async function startMessageLoop(): Promise<void> {
                 (m.is_from_me ||
                   isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
             );
+            logger.debug({ chatJid, hasTrigger }, 'Trigger check result');
             if (!hasTrigger) continue;
           }
 
           // Enqueue through the GroupQueue — processGroupMessages will
           // independently fetch and format the messages via lastAgentTimestamp.
+          logger.debug({ chatJid }, 'Enqueueing message check');
           queue.enqueueMessageCheck(chatJid);
         }
       }
