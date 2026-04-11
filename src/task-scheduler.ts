@@ -64,7 +64,6 @@ export function computeNextRun(task: ScheduledTask): string | null {
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
-  getSessions: () => Record<string, string>;
   queue: GroupQueue;
   onProcess: (
     groupJid: string,
@@ -150,10 +149,10 @@ async function runTask(
   let result: string | null = null;
   let error: string | null = null;
 
-  // For group context mode, use the group's current session
-  const sessions = deps.getSessions();
-  const sessionId =
-    task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+  // Scheduled tasks always use a fresh session — sharing the group's
+  // conversation session causes it to balloon (every task turn appended),
+  // slowing down subsequent loads on low-power hardware.
+  const sessionId = undefined;
 
   // After the task produces a result, close the container promptly.
   // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the
