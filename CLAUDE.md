@@ -25,6 +25,36 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 
 API keys, secret keys, OAuth tokens, and auth credentials are managed by the OneCLI gateway — which handles secret injection into containers at request time, so no keys or tokens are ever passed to containers directly. Run `onecli --help`.
 
+| URL | Purpose |
+|-----|---------|
+| `http://172.17.0.1:10254` | Dashboard (manage agents, secrets) |
+| `http://172.17.0.1:10255` | Gateway (proxy used by containers) |
+
+To start/stop: `docker compose -p onecli -f ~/.onecli/docker-compose.yml up -d` / `down`
+
+```bash
+# Agents
+onecli agents list
+onecli agents create --name "My Agent" --identifier "my-agent"
+onecli agents secrets --id <id>
+onecli agents set-secrets --id <id> --secret-ids <id1>,<id2>
+onecli agents regenerate-token --id <id>
+
+# Secrets
+onecli secrets list
+onecli secrets create --name "MY_KEY" --type generic --value "..." \
+  --host-pattern "api.example.com" \
+  --header-name "Authorization" --value-format "Bearer {value}"
+onecli secrets delete --id <id>
+
+# Policy rules (block/rate-limit outbound hosts)
+onecli rules list
+onecli rules create --name "Block X" --host-pattern "api.x.com" --action block
+
+# Apps (OAuth integrations)
+onecli apps list
+```
+
 ## Skills
 
 Four types of skills exist in NanoClaw. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full taxonomy and guidelines.
