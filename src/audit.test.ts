@@ -49,9 +49,21 @@ describe('auditEvent', () => {
   });
 
   it('writes multiple events as separate JSONL lines', () => {
-    auditEvent({ ts: '2026-04-12T13:00:00.000Z', event_type: 'system', metadata: { event: 'startup' } });
-    auditEvent({ ts: '2026-04-12T13:01:00.000Z', event_type: 'message_inbound', content: 'hi' });
-    auditEvent({ ts: '2026-04-12T13:02:00.000Z', event_type: 'message_outbound', content: 'hello back' });
+    auditEvent({
+      ts: '2026-04-12T13:00:00.000Z',
+      event_type: 'system',
+      metadata: { event: 'startup' },
+    });
+    auditEvent({
+      ts: '2026-04-12T13:01:00.000Z',
+      event_type: 'message_inbound',
+      content: 'hi',
+    });
+    auditEvent({
+      ts: '2026-04-12T13:02:00.000Z',
+      event_type: 'message_outbound',
+      content: 'hello back',
+    });
 
     const lines = fs.readFileSync(tmpLog, 'utf-8').trim().split('\n');
     expect(lines).toHaveLength(3);
@@ -65,7 +77,7 @@ describe('auditEvent', () => {
 
   it('applies chattr +a on first call', () => {
     auditEvent({ ts: '2026-04-12T13:00:00.000Z', event_type: 'system' });
-    expect(mockExecFileSync).toHaveBeenCalledWith('chattr', ['+a', tmpLog]);
+    expect(mockExecFileSync).toHaveBeenCalledWith('sudo', ['-n', 'chattr', '+a', tmpLog]);
   });
 
   it('only calls chattr once across multiple writes', () => {
@@ -75,8 +87,12 @@ describe('auditEvent', () => {
   });
 
   it('exits the process if chattr fails', () => {
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as never);
-    mockExecFileSync.mockImplementationOnce(() => { throw new Error('chattr not available'); });
+    const exitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation((() => {}) as never);
+    mockExecFileSync.mockImplementationOnce(() => {
+      throw new Error('chattr not available');
+    });
 
     auditEvent({ ts: '2026-04-12T13:00:00.000Z', event_type: 'system' });
 
@@ -85,8 +101,14 @@ describe('auditEvent', () => {
   });
 
   it('exits the process if appendFileSync fails', () => {
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as never);
-    const appendSpy = vi.spyOn(fs, 'appendFileSync').mockImplementationOnce(() => { throw new Error('disk full'); });
+    const exitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation((() => {}) as never);
+    const appendSpy = vi
+      .spyOn(fs, 'appendFileSync')
+      .mockImplementationOnce(() => {
+        throw new Error('disk full');
+      });
 
     auditEvent({ ts: '2026-04-12T13:00:00.000Z', event_type: 'system' });
 

@@ -38,9 +38,10 @@ function init(): void {
     fs.writeFileSync(auditLogPath, '');
   }
 
-  // Apply filesystem append-only flag. Fatal if this fails — no degraded mode.
+  // Apply filesystem append-only flag via sudo (requires NOPASSWD entry for chattr).
+  // Fatal if this fails — no degraded mode.
   try {
-    execFileSync('chattr', ['+a', auditLogPath]);
+    execFileSync('sudo', ['-n', 'chattr', '+a', auditLogPath]);
   } catch (err) {
     logger.fatal(
       { err, path: auditLogPath },
