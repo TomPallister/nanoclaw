@@ -202,12 +202,126 @@ export function buildVolumeMounts(
   // Sync skills from container/skills/ into each group's .claude/skills/
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
+  fs.mkdirSync(skillsDst, { recursive: true });
   if (fs.existsSync(skillsSrc)) {
     for (const skillDir of fs.readdirSync(skillsSrc)) {
       const srcDir = path.join(skillsSrc, skillDir);
       if (!fs.statSync(srcDir).isDirectory()) continue;
       const dstDir = path.join(skillsDst, skillDir);
       fs.cpSync(srcDir, dstDir, { recursive: true });
+    }
+  }
+
+  // Also sync skills from any installed Claude Code plugin (e.g. superpowers).
+  // Plugin registry loading is unreliable across versions, so we copy skills
+  // directly into .claude/skills/ the same way NanoClaw's own skills are loaded.
+  const hostPluginCacheDir = path.join(
+    os.homedir(),
+    '.claude',
+    'plugins',
+    'cache',
+  );
+  if (fs.existsSync(hostPluginCacheDir)) {
+    for (const marketplace of fs.readdirSync(hostPluginCacheDir)) {
+      const mktDir = path.join(hostPluginCacheDir, marketplace);
+      if (!fs.statSync(mktDir).isDirectory()) continue;
+      for (const plugin of fs.readdirSync(mktDir)) {
+        const pluginDir = path.join(mktDir, plugin);
+        if (!fs.statSync(pluginDir).isDirectory()) continue;
+        // Use the highest semver version dir available
+        const versions = fs
+          .readdirSync(pluginDir)
+          .filter((v) => fs.statSync(path.join(pluginDir, v)).isDirectory())
+          .sort()
+          .reverse();
+        if (versions.length === 0) continue;
+        const versionDir = path.join(pluginDir, versions[0]);
+        const pluginSkillsDir = path.join(versionDir, 'skills');
+        if (!fs.existsSync(pluginSkillsDir)) continue;
+        for (const skillDir of fs.readdirSync(pluginSkillsDir)) {
+          const srcDir = path.join(pluginSkillsDir, skillDir);
+          if (!fs.statSync(srcDir).isDirectory()) continue;
+          const dstDir = path.join(skillsDst, `${plugin}:${skillDir}`);
+          fs.cpSync(srcDir, dstDir, { recursive: true });
+        }
+      }
+    }
+  }
+
+  // Sync Claude Code plugins from the host user's plugin cache into the session
+  // directory. The session dir is mounted as /home/node/.claude in the container,
+  // so we rewrite installPath to the container-side equivalent.
+  const hostPluginsDir = path.join(os.homedir(), '.claude', 'plugins');
+  const hostInstalledJson = path.join(hostPluginsDir, 'installed_plugins.json');
+  if (fs.existsSync(hostInstalledJson)) {
+    try {
+      const hostRegistry = JSON.parse(
+        fs.readFileSync(hostInstalledJson, 'utf-8'),
+      ) as {
+        version: number;
+        plugins: Record<
+          string,
+          Array<{ scope: string; installPath: string; [key: string]: unknown }>
+        >;
+      };
+
+      const sessionPluginsDir = path.join(groupSessionsDir, 'plugins');
+      const sessionCacheDir = path.join(sessionPluginsDir, 'cache');
+      fs.mkdirSync(sessionCacheDir, { recursive: true });
+
+      const sessionRegistry: typeof hostRegistry = {
+        version: hostRegistry.version,
+        plugins: {},
+      };
+
+      for (const [pluginKey, entries] of Object.entries(hostRegistry.plugins)) {
+        sessionRegistry.plugins[pluginKey] = [];
+        for (const entry of entries) {
+          const hostInstallPath = entry.installPath;
+          if (!fs.existsSync(hostInstallPath)) continue;
+
+          // Derive a relative path under the cache dir so we can mirror it
+          const cacheMarker = `${path.sep}cache${path.sep}`;
+          const cacheIdx = hostInstallPath.indexOf(cacheMarker);
+          const relPath =
+            cacheIdx !== -1
+              ? hostInstallPath.slice(cacheIdx + cacheMarker.length)
+              : path.basename(hostInstallPath);
+
+          const sessionInstallPath = path.join(sessionCacheDir, relPath);
+          fs.cpSync(hostInstallPath, sessionInstallPath, { recursive: true });
+
+          // Container-side path under /home/node/.claude/plugins/cache/
+          const containerInstallPath = `/home/node/.claude/plugins/cache/${relPath}`;
+          sessionRegistry.plugins[pluginKey].push({
+            ...entry,
+            installPath: containerInstallPath,
+          });
+        }
+      }
+
+      fs.writeFileSync(
+        path.join(sessionPluginsDir, 'installed_plugins.json'),
+        JSON.stringify(sessionRegistry, null, 2) + '\n',
+      );
+
+      // Copy marketplace metadata if present (needed for plugin update checks)
+      const hostKnownMkt = path.join(hostPluginsDir, 'known_marketplaces.json');
+      const sessionKnownMkt = path.join(
+        sessionPluginsDir,
+        'known_marketplaces.json',
+      );
+      if (fs.existsSync(hostKnownMkt) && !fs.existsSync(sessionKnownMkt)) {
+        fs.copyFileSync(hostKnownMkt, sessionKnownMkt);
+      }
+
+      const hostBlocklist = path.join(hostPluginsDir, 'blocklist.json');
+      const sessionBlocklist = path.join(sessionPluginsDir, 'blocklist.json');
+      if (fs.existsSync(hostBlocklist) && !fs.existsSync(sessionBlocklist)) {
+        fs.copyFileSync(hostBlocklist, sessionBlocklist);
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Failed to sync host plugins into session dir');
     }
   }
   mounts.push({
