@@ -32,7 +32,6 @@ export function startCredentialProxy(
     'CLAUDE_CODE_OAUTH_TOKEN',
     'ANTHROPIC_AUTH_TOKEN',
     'ANTHROPIC_BASE_URL',
-    'GITHUB_TOKEN',
   ]);
 
   const authMode: AuthMode = secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
@@ -50,14 +49,10 @@ export function startCredentialProxy(
       // GitHub credential endpoint — returns token as plaintext for
       // container-side git credential helper and gh CLI wrapper.
       if (req.url === '/github-credential' && req.method === 'GET') {
-        const ghToken = process.env.GITHUB_TOKEN || secrets.GITHUB_TOKEN || '';
-        if (!ghToken) {
-          res.writeHead(404);
-          res.end('No GitHub token configured');
-          return;
-        }
-        res.writeHead(200, { 'content-type': 'text/plain' });
-        res.end(ghToken);
+        // GitHub credentials are now managed by the OneCLI gateway.
+        // This endpoint is kept for backward compatibility but returns 404.
+        res.writeHead(404);
+        res.end('GitHub credentials managed by OneCLI gateway');
         return;
       }
 
