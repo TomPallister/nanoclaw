@@ -580,7 +580,11 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
   restoreRemoteControl();
-  auditEvent({ ts: new Date().toISOString(), event_type: 'system', metadata: { event: 'startup' } });
+  auditEvent({
+    ts: new Date().toISOString(),
+    event_type: 'system',
+    metadata: { event: 'startup' },
+  });
 
   // Start credential proxy (containers route API calls through this)
   const proxyServer = await startCredentialProxy(
@@ -591,7 +595,11 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
-    auditEvent({ ts: new Date().toISOString(), event_type: 'system', metadata: { event: 'shutdown', signal } });
+    auditEvent({
+      ts: new Date().toISOString(),
+      event_type: 'system',
+      metadata: { event: 'shutdown', signal },
+    });
     proxyServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
@@ -733,7 +741,11 @@ async function main(): Promise<void> {
     }
     channels.push(channel);
     await channel.connect();
-    auditEvent({ ts: new Date().toISOString(), event_type: 'system', metadata: { event: 'channel_connected', channel: channelName } });
+    auditEvent({
+      ts: new Date().toISOString(),
+      event_type: 'system',
+      metadata: { event: 'channel_connected', channel: channelName },
+    });
   }
   if (channels.length === 0) {
     logger.fatal('No channels connected');

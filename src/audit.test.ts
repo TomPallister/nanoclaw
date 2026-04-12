@@ -77,7 +77,12 @@ describe('auditEvent', () => {
 
   it('applies chattr +a on first call', () => {
     auditEvent({ ts: '2026-04-12T13:00:00.000Z', event_type: 'system' });
-    expect(mockExecFileSync).toHaveBeenCalledWith('sudo', ['-n', 'chattr', '+a', tmpLog]);
+    expect(mockExecFileSync).toHaveBeenCalledWith('sudo', [
+      '-n',
+      'chattr',
+      '+a',
+      tmpLog,
+    ]);
   });
 
   it('only calls chattr once across multiple writes', () => {
