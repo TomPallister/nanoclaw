@@ -7,6 +7,7 @@ import { OAuth2Client } from 'google-auth-library';
 
 // isMain flag is used instead of MAIN_GROUP_FOLDER constant
 import { logger } from '../logger.js';
+import { auditEvent } from '../audit.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
@@ -156,6 +157,16 @@ export class GmailChannel implements Channel {
         },
       });
       logger.info({ to: meta.sender, threadId }, 'Gmail reply sent');
+      auditEvent({
+        ts: new Date().toISOString(),
+        event_type: 'email_outbound',
+        direction: 'outbound',
+        channel: 'gmail',
+        sender: this.userEmail ?? undefined,
+        recipient: meta.sender,
+        content: text,
+        metadata: { subject, threadId },
+      });
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Gmail reply');
     }

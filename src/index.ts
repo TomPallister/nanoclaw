@@ -69,6 +69,7 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { parseImageReferences } from './image.js';
 import { logger } from './logger.js';
+import { auditEvent } from './audit.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -305,6 +306,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text) {
           await channel.sendMessage(chatJid, text);
+          auditEvent({
+            ts: new Date().toISOString(),
+            event_type: 'message_outbound',
+            direction: 'outbound',
+            channel: channel.name,
+            recipient: chatJid,
+            content: text,
+          });
           outputSentToUser = true;
         }
         // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -571,6 +580,7 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
   restoreRemoteControl();
+  auditEvent({ ts: new Date().toISOString(), event_type: 'system', metadata: { event: 'startup' } });
 
   // Start credential proxy (containers route API calls through this)
   const proxyServer = await startCredentialProxy(
@@ -581,6 +591,7 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    auditEvent({ ts: new Date().toISOString(), event_type: 'system', metadata: { event: 'shutdown', signal } });
     proxyServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
@@ -634,9 +645,20 @@ async function main(): Promise<void> {
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
+      const channelName = findChannel(channels, chatJid)?.name ?? 'unknown';
       // Remote control commands — intercept before storage
       const trimmed = msg.content.trim();
       if (trimmed === '/remote-control' || trimmed === '/remote-control-end') {
+        auditEvent({
+          ts: new Date().toISOString(),
+          event_type: 'remote_control',
+          direction: 'inbound',
+          channel: channelName,
+          sender: msg.sender,
+          sender_name: msg.sender_name,
+          recipient: chatJid,
+          content: trimmed,
+        });
         handleRemoteControl(trimmed, chatJid, msg).catch((err) =>
           logger.error({ err, chatJid }, 'Remote control command error'),
         );
@@ -656,9 +678,34 @@ async function main(): Promise<void> {
               'sender-allowlist: dropping message (drop mode)',
             );
           }
+          auditEvent({
+            ts: new Date().toISOString(),
+            event_type: 'allowlist_drop',
+            direction: 'inbound',
+            channel: channelName,
+            sender: msg.sender,
+            sender_name: msg.sender_name,
+            recipient: chatJid,
+            content: msg.content,
+          });
           return;
         }
       }
+      auditEvent({
+        ts: new Date().toISOString(),
+        event_type: 'message_inbound',
+        direction: 'inbound',
+        channel: channelName,
+        sender: msg.sender,
+        sender_name: msg.sender_name,
+        recipient: chatJid,
+        content: msg.content,
+        metadata: {
+          is_from_me: msg.is_from_me,
+          is_bot_message: msg.is_bot_message,
+          msg_id: msg.id,
+        },
+      });
       storeMessage(msg);
     },
     onChatMetadata: (
@@ -686,6 +733,7 @@ async function main(): Promise<void> {
     }
     channels.push(channel);
     await channel.connect();
+    auditEvent({ ts: new Date().toISOString(), event_type: 'system', metadata: { event: 'channel_connected', channel: channelName } });
   }
   if (channels.length === 0) {
     logger.fatal('No channels connected');
@@ -705,13 +753,33 @@ async function main(): Promise<void> {
         return;
       }
       const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
+      if (text) {
+        await channel.sendMessage(jid, text);
+        auditEvent({
+          ts: new Date().toISOString(),
+          event_type: 'message_outbound',
+          direction: 'outbound',
+          channel: channel.name,
+          recipient: jid,
+          content: text,
+          metadata: { source: 'scheduler' },
+        });
+      }
     },
   });
   startIpcWatcher({
     sendMessage: (jid, text) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      auditEvent({
+        ts: new Date().toISOString(),
+        event_type: 'message_outbound',
+        direction: 'outbound',
+        channel: channel.name,
+        recipient: jid,
+        content: text,
+        metadata: { source: 'ipc' },
+      });
       return channel.sendMessage(jid, text);
     },
     sendPhoto: (jid, url, caption) => {
@@ -742,6 +810,14 @@ async function main(): Promise<void> {
         }
       }
 
+      auditEvent({
+        ts: new Date().toISOString(),
+        event_type: 'message_outbound',
+        direction: 'outbound',
+        channel: channel.name,
+        recipient: jid,
+        metadata: { source: 'ipc', type: 'photo', url: translatedUrl, caption },
+      });
       return channel.sendPhoto(jid, translatedUrl, caption);
     },
     registeredGroups: () => registeredGroups,
