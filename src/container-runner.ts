@@ -7,6 +7,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import { OneCLI } from '@onecli-sh/sdk';
+
 import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
@@ -15,8 +17,18 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  ONECLI_URL,
   TIMEZONE,
 } from './config.js';
+
+// Parse apiKey from ONECLI_URL (http://token@host:port) since the SDK
+// does not extract credentials from the URL — it needs apiKey separately.
+const _onecliParsed = ONECLI_URL ? new URL(ONECLI_URL) : null;
+const _onecliBase = _onecliParsed
+  ? `${_onecliParsed.protocol}//${_onecliParsed.hostname}:${_onecliParsed.port}`
+  : ONECLI_URL;
+const _onecliKey = _onecliParsed?.password || _onecliParsed?.username || '';
+const onecli = new OneCLI({ url: _onecliBase, apiKey: _onecliKey });
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -147,22 +159,10 @@ export function buildVolumeMounts(
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
 
   // Env vars to always forward from host .env / process.env into the container settings.
-  // These are merged on every startup so adding a new key to .env takes effect after restart.
-  const FORWARDED_ENV_KEYS = [
-    'TIMES_API_TOKEN',
-    'CLAUDE_CODE_USE_BEDROCK',
-    'AWS_BEARER_TOKEN_BEDROCK',
-    'AWS_REGION',
-    'ANTHROPIC_DEFAULT_OPUS_MODEL',
-    'ANTHROPIC_DEFAULT_SONNET_MODEL',
-    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  ];
-  const forwardedEnv = readEnvFile(FORWARDED_ENV_KEYS);
-  // Also pick up from process.env (e.g. exported via ~/.zshenv.local)
-  for (const key of FORWARDED_ENV_KEYS) {
-    if (!forwardedEnv[key] && process.env[key])
-      forwardedEnv[key] = process.env[key]!;
-  }
+  // NOTE: Secrets (AWS_BEARER_TOKEN_BEDROCK, TIMES_API_TOKEN) are intentionally excluded —
+  // they are injected at request time by the OneCLI gateway, never stored in the container.
+  // NOTE: Config vars (CLAUDE_CODE_USE_BEDROCK etc.) are excluded — they're passed as Docker
+  // -e flags in runContainerAgent so the Claude Agent SDK picks them up from process.env.
 
   // Read existing settings (if any) so we preserve user customisations
   let existingSettings: Record<string, any> = {};
@@ -191,8 +191,6 @@ export function buildVolumeMounts(
     env: {
       ...baseEnv,
       ...(existingSettings.env || {}),
-      // Forwarded keys always win so they stay current with .env / zshenv.local
-      ...forwardedEnv,
     },
   };
 
@@ -313,6 +311,7 @@ export function buildVolumeMounts(
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  extraEnv: Record<string, string> = {},
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -327,6 +326,11 @@ function buildContainerArgs(
 
   // Chrome DevTools Protocol URL for host browser automation
   args.push('-e', `HOST_BROWSER_CDP_URL=ws://${CONTAINER_HOST_GATEWAY}:9222`);
+
+  // Non-secret config vars visible to Claude Agent SDK (which uses process.env directly)
+  for (const [key, value] of Object.entries(extraEnv)) {
+    if (value) args.push('-e', `${key}=${value}`);
+  }
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
@@ -349,7 +353,9 @@ function buildContainerArgs(
     }
   }
 
-  args.push(CONTAINER_IMAGE);
+  // NOTE: CONTAINER_IMAGE is NOT appended here — it must come after all
+  // option flags including those added by applyContainerConfig. Callers
+  // are responsible for appending the image name to the returned args.
 
   return args;
 }
@@ -368,7 +374,47 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+
+  // Non-secret config vars that must be Docker -e flags so the Claude Agent SDK
+  // picks them up from process.env (it uses process.env directly for sdkEnv).
+  // AWS_BEARER_TOKEN_BEDROCK placeholder is required so Claude Code sends an
+  // Authorization header to Bedrock, which the OneCLI gateway then replaces with
+  // the real token before forwarding to AWS.
+  const CONFIG_KEYS = [
+    'CLAUDE_CODE_USE_BEDROCK',
+    'AWS_REGION',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  ] as const;
+  const configEnv = readEnvFile([...CONFIG_KEYS]);
+  for (const key of CONFIG_KEYS) {
+    if (!configEnv[key] && process.env[key]) configEnv[key] = process.env[key]!;
+  }
+  // Placeholder enables Bedrock auth; OneCLI gateway replaces it with the real token.
+  if (configEnv['CLAUDE_CODE_USE_BEDROCK'] === '1') {
+    configEnv['AWS_BEARER_TOKEN_BEDROCK'] = 'placeholder';
+  }
+
+  const containerArgs = buildContainerArgs(mounts, containerName, configEnv);
+
+  // Inject OneCLI gateway config: sets HTTPS_PROXY, mounts CA cert.
+  // The gateway intercepts outbound requests and injects real credentials
+  // per host-pattern — secrets are never stored in the container.
+  // addHostMapping: false because hostGatewayArgs() already handles this.
+  // No agent identifier: the bearer token in ONECLI_URL identifies the agent.
+  const onecliApplied = await onecli.applyContainerConfig(containerArgs, {
+    addHostMapping: false,
+  });
+  if (!onecliApplied) {
+    logger.warn(
+      { group: group.name },
+      'OneCLI gateway not reachable — container will run without credential injection',
+    );
+  }
+
+  // Image must come after all docker run option flags (including OneCLI's -e/-v)
+  containerArgs.push(CONTAINER_IMAGE);
 
   logger.debug(
     {
