@@ -534,10 +534,35 @@ async function startMessageLoop(): Promise<void> {
             if (!hasTrigger) continue;
           }
 
-          // Enqueue through the GroupQueue — processGroupMessages will
-          // independently fetch and format the messages via lastAgentTimestamp.
-          logger.debug({ chatJid }, 'Enqueueing message check');
-          queue.enqueueMessageCheck(chatJid);
+          // If a container is already running for this group, pipe the new
+          // message directly into it via IPC so the user doesn't wait for the
+          // current container to finish before getting a response.
+          // Falls back to enqueueMessageCheck if no active container is available
+          // (e.g. task container, container just finished, etc.).
+          const pendingMsgs = getMessagesSince(
+            chatJid,
+            getOrRecoverCursor(chatJid),
+            ASSISTANT_NAME,
+            MAX_MESSAGES_PER_PROMPT,
+          );
+          if (
+            pendingMsgs.length > 0 &&
+            queue.sendMessage(chatJid, formatMessages(pendingMsgs, TIMEZONE))
+          ) {
+            // Message forwarded to active container — advance cursor immediately
+            // so processGroupMessages won't re-send it when the container next runs.
+            lastAgentTimestamp[chatJid] =
+              pendingMsgs[pendingMsgs.length - 1].timestamp;
+            saveState();
+            logger.info(
+              { group: group.name, messageCount: pendingMsgs.length },
+              'Forwarded to active container via IPC',
+            );
+          } else {
+            // No active container (or task container) — enqueue normally.
+            logger.debug({ chatJid }, 'Enqueueing message check');
+            queue.enqueueMessageCheck(chatJid);
+          }
         }
       }
     } catch (err) {
