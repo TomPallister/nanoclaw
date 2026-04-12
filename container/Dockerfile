@@ -63,8 +63,25 @@ RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/
 # Follow-up messages arrive via IPC files in /workspace/ipc/input/
 RUN printf '#!/bin/bash\nset -e\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
+# Install superpowers plugin for Claude Code.
+# Cloned into the plugin cache directory so Claude Code discovers it automatically.
+# The installed_plugins.json registry file tells Claude Code where to find it.
+RUN mkdir -p /home/node/.claude/plugins/cache/claude-plugins-official/superpowers \
+    && git clone --depth 1 https://github.com/obra/superpowers.git \
+       /home/node/.claude/plugins/cache/claude-plugins-official/superpowers/latest \
+    && COMMIT=$(git -C /home/node/.claude/plugins/cache/claude-plugins-official/superpowers/latest rev-parse HEAD) \
+    && VERSION=$(cat /home/node/.claude/plugins/cache/claude-plugins-official/superpowers/latest/package.json \
+       | grep '"version"' | head -1 | sed 's/.*"\([0-9.]*\)".*/\1/') \
+    && printf '{"version":2,"plugins":{"superpowers@claude-plugins-official":[{"scope":"user","installPath":"/home/node/.claude/plugins/cache/claude-plugins-official/superpowers/latest","version":"%s","installedAt":"2026-01-01T00:00:00.000Z","lastUpdated":"2026-01-01T00:00:00.000Z","gitCommitSha":"%s"}]}}' \
+       "$VERSION" "$COMMIT" \
+       > /home/node/.claude/plugins/installed_plugins.json \
+    && printf '{"claude-plugins-official":{"source":{"source":"github","repo":"anthropics/claude-plugins-official"},"installLocation":"/home/node/.claude/plugins/marketplaces/claude-plugins-official","lastUpdated":"2026-01-01T00:00:00.000Z"}}' \
+       > /home/node/.claude/plugins/known_marketplaces.json \
+    && printf '{"fetchedAt":"2026-01-01T00:00:00.000Z","plugins":[]}' \
+       > /home/node/.claude/plugins/blocklist.json
+
 # Set ownership to node user (non-root) for writable directories
-RUN chown -R node:node /workspace && chmod 777 /home/node
+RUN chown -R node:node /workspace /home/node && chmod 777 /home/node
 
 # Git credential helper — fetches GitHub token from credential proxy on demand.
 # Token passes transiently through memory, never stored in environment or on disk.
