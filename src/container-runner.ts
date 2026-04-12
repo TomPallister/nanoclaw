@@ -509,6 +509,10 @@ export async function runContainerAgent(
   if (configEnv['CLAUDE_CODE_USE_BEDROCK'] === '1') {
     configEnv['AWS_BEARER_TOKEN_BEDROCK'] = 'placeholder';
   }
+  // GH_TOKEN=placeholder satisfies gh CLI's auth check so it will make API calls.
+  // OneCLI gateway intercepts requests to api.github.com/github.com and replaces
+  // the Authorization header with the real token. Without this, gh refuses to run.
+  configEnv['GH_TOKEN'] = 'placeholder';
 
   const containerArgs = buildContainerArgs(mounts, containerName, configEnv);
 
