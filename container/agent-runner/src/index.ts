@@ -541,8 +541,8 @@ async function runQuery(
             command: 'google-calendar-mcp',
             args: [],
             env: {
-              GOOGLE_OAUTH_CREDENTIALS: '/workspace/gcal/gcal-oauth.keys.json',
-              GOOGLE_CALENDAR_MCP_TOKEN_PATH: '/workspace/gcal/tokens.json',
+              GOOGLE_OAUTH_CREDENTIALS: '/home/node/.config/google-calendar-mcp/gcal-oauth.keys.json',
+              GOOGLE_CALENDAR_MCP_TOKEN_PATH: '/home/node/.config/google-calendar-mcp/tokens.json',
             },
           },
           'nuk-tpa-mcp': {
