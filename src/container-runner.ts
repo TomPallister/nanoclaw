@@ -514,6 +514,13 @@ export async function runContainerAgent(
   // the Authorization header with the real token. Without this, gh refuses to run.
   configEnv['GH_TOKEN'] = 'placeholder';
 
+  // TIMES_API_TOKEN: passed directly when OneCLI is not configured.
+  // When OneCLI is active it intercepts api.thetimes.co.uk requests and injects
+  // the real token, so the value here is overridden. When OneCLI is absent the
+  // value from .env is used as-is.
+  const timesToken = process.env.TIMES_API_TOKEN || readEnvFile(['TIMES_API_TOKEN'])['TIMES_API_TOKEN'];
+  if (timesToken) configEnv['TIMES_API_TOKEN'] = timesToken;
+
   const containerArgs = buildContainerArgs(mounts, containerName, configEnv);
 
   // Inject OneCLI gateway config: sets HTTPS_PROXY, mounts CA cert.

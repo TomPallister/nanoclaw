@@ -547,7 +547,10 @@ async function runQuery(
           },
           'nuk-tpa-mcp': {
             command: 'node',
-            args: ['/workspace/extra/nuk-tpa-mcp/dist/index.js'],
+            args: ['/workspace/extra/dev/nuk-tpa-mcp/dist/index.js'],
+            env: {
+              TIMES_API_TOKEN: process.env.TIMES_API_TOKEN ?? '',
+            },
           },
           'host-browser': {
             command: 'chrome-devtools-mcp',
