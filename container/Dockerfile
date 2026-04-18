@@ -73,6 +73,25 @@ RUN chown -R node:node /workspace && chmod 777 /home/node
 # Switch to non-root user (required for --dangerously-skip-permissions)
 USER node
 
+# Create OneCLI credential stub files for Google services.
+# These contain only sentinel values — real credentials are injected at
+# request time by the OneCLI gateway when the MCP server triggers a token
+# refresh. expiry_date: 0 forces an immediate refresh on first use.
+# These files are safe to bake into the image as they contain no real secrets.
+RUN mkdir -p /home/node/.gmail-mcp /home/node/.config/google-calendar-mcp \
+    && printf '{"installed":{"client_id":"onecli-managed.apps.googleusercontent.com","client_secret":"onecli-managed","redirect_uris":["http://localhost:3000/oauth2callback"]}}' \
+       > /home/node/.gmail-mcp/gcp-oauth.keys.json \
+    && printf '{"access_token":"onecli-managed","refresh_token":"onecli-managed","token_type":"Bearer","expiry_date":0}' \
+       > /home/node/.gmail-mcp/credentials.json \
+    && printf '{"installed":{"client_id":"onecli-managed","client_secret":"onecli-managed","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","redirect_uris":["http://localhost:3000/oauth2callback"]}}' \
+       > /home/node/.config/google-calendar-mcp/gcal-oauth.keys.json \
+    && printf '{"access_token":"onecli-managed","refresh_token":"onecli-managed","token_type":"Bearer","expiry_date":0}' \
+       > /home/node/.config/google-calendar-mcp/tokens.json \
+    && chmod 600 /home/node/.gmail-mcp/gcp-oauth.keys.json \
+                 /home/node/.gmail-mcp/credentials.json \
+                 /home/node/.config/google-calendar-mcp/gcal-oauth.keys.json \
+                 /home/node/.config/google-calendar-mcp/tokens.json
+
 # Set working directory to group workspace
 WORKDIR /workspace/group
 

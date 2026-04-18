@@ -330,33 +330,9 @@ export function buildVolumeMounts(
     readonly: false,
   });
 
-  // Gmail credentials directory (for Gmail MCP inside the container)
-  const homeDir = os.homedir();
-  const gmailDir = path.join(homeDir, '.gmail-mcp');
-  if (fs.existsSync(gmailDir)) {
-    mounts.push({
-      hostPath: gmailDir,
-      containerPath: '/home/node/.gmail-mcp',
-      readonly: false, // MCP may need to refresh OAuth tokens
-    });
-  }
-
-  // Google Calendar credentials (for Calendar MCP inside the container)
-  // Keys and tokens are co-located in ~/.config/google-calendar-mcp/
-  const gcalDir = path.join(homeDir, '.config', 'google-calendar-mcp');
-  if (
-    fs.existsSync(path.join(gcalDir, 'gcal-oauth.keys.json')) &&
-    fs.existsSync(path.join(gcalDir, 'tokens.json'))
-  ) {
-    mounts.push({
-      hostPath: gcalDir,
-      containerPath: '/home/node/.config/google-calendar-mcp',
-      readonly: false, // MCP may need to refresh OAuth tokens
-    });
-  }
-
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
+  const homeDir = os.homedir();
   const groupIpcDir = resolveGroupIpcPath(group.folder);
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });

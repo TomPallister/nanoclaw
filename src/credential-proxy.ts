@@ -9,6 +9,12 @@
  *             API key via /api/oauth/claude_cli/create_api_key.
  *             Proxy injects real OAuth token on that exchange request;
  *             subsequent requests carry the temp key which is valid as-is.
+ *
+ * Google services (Gmail, Calendar) use OneCLI credential stubs baked into
+ * the container image. The MCP servers boot with sentinel values and trigger
+ * an OAuth token refresh via HTTP; the OneCLI gateway intercepts that request
+ * and returns a real access token. No Google credentials are mounted from the
+ * host filesystem.
  */
 import { createServer, Server } from 'http';
 import { request as httpsRequest } from 'https';
