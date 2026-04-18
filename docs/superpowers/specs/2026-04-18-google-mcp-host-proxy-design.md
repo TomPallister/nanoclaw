@@ -66,7 +66,7 @@ Agent Container
 
 ### Authentication
 
-`mcp-proxy` supports `--apiKey` which enforces `X-Api-Key` header auth on all requests. The container receives the token via `GOOGLE_MCP_AUTH_TOKEN` env var and passes it as `Authorization: Bearer <token>` in the SSE headers.
+`mcp-proxy` supports `--apiKey` which enforces `X-Api-Key: <token>` header auth on all inbound requests. The container receives the token via `GOOGLE_MCP_AUTH_TOKEN` env var and passes it as `{ 'X-Api-Key': token }` in the SSE `headers` config.
 
 This is a proxy auth token, not a Google OAuth token — the agent seeing it gains no access to Google credentials.
 
@@ -79,6 +79,10 @@ The token is randomly generated at NanoClaw startup and lives in memory only.
 - If a proxy process crashes, it is restarted with exponential backoff
 - On NanoClaw shutdown, proxy processes are gracefully terminated
 - If credentials don't exist → proxy not started → Gmail/GCal tools simply absent (same as today)
+
+### State Sharing
+
+`startGoogleMcpProxies()` is called once in `src/index.ts` at startup. The returned `GoogleMcpProxyState` is held as a module-level variable in `container-runner.ts` (consistent with how `onecli` is used there). A `setGoogleMcpState(state)` setter function is exported from `container-runner.ts` and called from `index.ts` after proxy startup.
 
 ### google-mcp-proxy.ts Interface
 
@@ -121,14 +125,14 @@ gmail: { command: 'gmail-mcp', args: [] }
   gmail: {
     type: 'sse',
     url: process.env.GMAIL_MCP_URL,
-    headers: { Authorization: `Bearer ${process.env.GOOGLE_MCP_AUTH_TOKEN}` }
+    headers: { 'X-Api-Key': process.env.GOOGLE_MCP_AUTH_TOKEN! }
   }
 }),
 ...(process.env.GCAL_MCP_URL && {
   'google-calendar': {
     type: 'sse',
     url: process.env.GCAL_MCP_URL,
-    headers: { Authorization: `Bearer ${process.env.GOOGLE_MCP_AUTH_TOKEN}` }
+    headers: { 'X-Api-Key': process.env.GOOGLE_MCP_AUTH_TOKEN! }
   }
 }),
 ```
