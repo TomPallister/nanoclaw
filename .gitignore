@@ -12,8 +12,11 @@ logs/
 # Groups - external storage (symlinked), don't track
 groups/
 # But do track per-group CLAUDE.md memory files
+# (git won't descend into ignored dirs, so we must unignore the dirs first,
+# then re-ignore everything inside them, then carve out CLAUDE.md)
 !groups/
 !groups/*/
+groups/**
 !groups/*/CLAUDE.md
 
 # Secrets
