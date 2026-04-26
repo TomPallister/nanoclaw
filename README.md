@@ -161,6 +161,22 @@ Yes. Docker is the default runtime and works on macOS, Linux, and Windows (via W
 
 Agents run in containers, not behind application-level permission checks. They can only access explicitly mounted directories. Credentials never enter the container — outbound API requests route through [OneCLI's Agent Vault](https://github.com/onecli/onecli), which injects authentication at the proxy level and supports rate limits and access policies. You should still review what you're running, but the codebase is small enough that you actually can. See the [security documentation](https://docs.nanoclaw.dev/concepts/security) for the full security model.
 
+**How do I migrate NanoClaw to a new machine?**
+
+NanoClaw itself is fully in source control. For OneCLI, two config files are stored in `config/onecli/` and must be restored after a fresh `onecli init`:
+
+```bash
+./scripts/restore-onecli-config.sh
+```
+
+This copies `docker-compose.override.yml` (fixes the OAuth redirect URI when OneCLI is LAN-accessible) and `env.conf` (sets `ONECLI_BIND_HOST`) into `~/.onecli/`. Then restart OneCLI:
+
+```bash
+docker compose -p onecli -f ~/.onecli/docker-compose.yml -f ~/.onecli/docker-compose.override.yml up -d --force-recreate
+```
+
+OAuth connections (Gmail, Calendar, etc.) will need to be re-authorised via the dashboard after a migration — tokens are stored in OneCLI's database, not in this repo.
+
 **Why no configuration files?**
 
 We don't want configuration sprawl. Every user should customize NanoClaw so that the code does exactly what they want, rather than configuring a generic system. If you prefer having config files, you can tell Claude to add them.
