@@ -1,0 +1,5 @@
+services:
+  onecli:
+    environment:
+      NEXT_PUBLIC_APP_URL: http://localhost:10254
+      APP_URL: http://localhost:10254
